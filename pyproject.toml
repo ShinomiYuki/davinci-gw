@@ -1,0 +1,15 @@
+# 本文件用于声明 davinci-gw 工程的构建方式、基础元数据和 Python 版本要求。
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "davinci-gw"
+version = "0.1.0"
+description = "根据标准化网关路由配置表更新 DaVinci 工程 ARXML。"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
