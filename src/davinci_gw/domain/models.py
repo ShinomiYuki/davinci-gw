@@ -1,2 +1,200 @@
-"""本文件用于定义路由变更、配置载荷和变更集合等核心领域模型。"""
+"""与 Excel、lxml 和 CLI 无关的核心领域模型。"""
 
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from decimal import Decimal
+from enum import Enum
+from pathlib import Path
+from types import MappingProxyType
+from typing import Mapping
+
+from .route_keys import DirectRouteKey, SignalRouteKey
+
+
+class OperationType(str, Enum):
+    """标准变更操作。"""
+
+    ADD = "ADD"
+    DELETE = "DELETE"
+
+
+class ValidationSeverity(str, Enum):
+    """校验问题严重级别。"""
+
+    ERROR = "ERROR"
+    WARNING = "WARNING"
+
+
+class ValidationCategory(str, Enum):
+    """用于稳定区分用户契约错误和系统/文件损坏错误。"""
+
+    CONTRACT = "CONTRACT"
+    SYSTEM = "SYSTEM"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLocation:
+    """外部输入中的可定位来源。"""
+
+    sheet_name: str | None = None
+    row_number: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceDataEntry:
+    """一个 CAN 通道及后续轮次使用的 CanIf 引用数据。"""
+
+    channel_name: str
+    tx_buffer_name: str | None
+    hrh_name: str | None
+    source: SourceLocation
+
+
+@dataclass(frozen=True, slots=True)
+class DirectRouteChange:
+    """一条直接报文路由变更及本轮解析的全部参数。"""
+
+    operation: OperationType
+    key: DirectRouteKey
+    source_length: int | None
+    source_message_type: str | None
+    source_rx_indication_ul: str | None
+    source_checksum_enabled: str | None
+    source_dlc_check_enabled: str | None
+    target_length: int | None
+    target_message_type: str | None
+    target_checksum_enabled: str | None
+    target_pn_filter_enabled: str | None
+    target_truncation_enabled: str | None
+    length_strategy: str | None
+    source: SourceLocation
+
+    @property
+    def source_can_id_text(self) -> str:
+        """以统一十六进制格式回显源 CAN ID。"""
+        return f"0x{self.key.source_can_id:X}"
+
+    @property
+    def target_can_id_text(self) -> str:
+        """以统一十六进制格式回显目标 CAN ID。"""
+        return f"0x{self.key.target_can_id:X}"
+
+
+@dataclass(frozen=True, slots=True)
+class SignalRouteChange:
+    """一条信号路由变更及允许为空的超时信息。"""
+
+    operation: OperationType
+    key: SignalRouteKey
+    byte_order: str | None
+    timeout_value: Decimal | None
+    timeout_time: Decimal | None
+    source_signal_group_name: str | None
+    source: SourceLocation
+
+
+@dataclass(frozen=True, slots=True)
+class WorkbookData:
+    """标准工作簿规范化后的全部执行数据。"""
+
+    path: Path
+    target_version: str | None
+    reference_data: tuple[ReferenceDataEntry, ...] = ()
+    direct_routes: tuple[DirectRouteChange, ...] = ()
+    signal_routes: tuple[SignalRouteChange, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationIssue:
+    """可供 CLI 和未来 GUI 共同渲染的结构化问题。"""
+
+    code: str
+    message: str
+    severity: ValidationSeverity = ValidationSeverity.ERROR
+    category: ValidationCategory = ValidationCategory.CONTRACT
+    file_path: Path | None = None
+    location: SourceLocation | None = None
+    field_name: str | None = None
+    actual_value: object = None
+    cause: BaseException | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ArxmlModuleInfo:
+    """目标 ECUC 模块的位置与标识；node 仅由 ARXML 层使用。"""
+
+    short_name: str
+    definition_ref: str
+    autosar_path: str
+    package_path: str
+    node: object = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ArxmlInspectionResult:
+    """基准 ARXML 的命名空间、Schema 和四模块检查结果。"""
+
+    path: Path
+    namespace_uri: str
+    schema_location: str | None
+    schema_filename: str | None
+    modules: Mapping[str, ArxmlModuleInfo]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "modules", MappingProxyType(dict(self.modules)))
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationReport:
+    """输入联合校验结果。"""
+
+    issues: tuple[ValidationIssue, ...] = ()
+    workbook_data: WorkbookData | None = None
+    arxml_inspection: ArxmlInspectionResult | None = None
+
+    @property
+    def errors(self) -> tuple[ValidationIssue, ...]:
+        """返回所有阻止执行的问题。"""
+        return tuple(issue for issue in self.issues if issue.severity is ValidationSeverity.ERROR)
+
+    @property
+    def warnings(self) -> tuple[ValidationIssue, ...]:
+        """返回所有不阻止执行的提示。"""
+        return tuple(issue for issue in self.issues if issue.severity is ValidationSeverity.WARNING)
+
+    @property
+    def is_valid(self) -> bool:
+        """没有错误时输入有效。"""
+        return not self.errors
+
+
+@dataclass(frozen=True, slots=True)
+class PreviewReport:
+    """不修改 ARXML 的结构化变更计数预览。"""
+
+    validation: ValidationReport
+    target_version: str | None = None
+    reference_count: int = 0
+    direct_add_count: int = 0
+    direct_delete_count: int = 0
+    signal_add_count: int = 0
+    signal_delete_count: int = 0
+
+    @property
+    def is_valid(self) -> bool:
+        """预览所基于的联合校验是否通过。"""
+        return self.validation.is_valid
+
+
+@dataclass(frozen=True, slots=True)
+class WorkbookReadResult:
+    """读取器返回的数据与契约问题集合。"""
+
+    data: WorkbookData
+    issues: tuple[ValidationIssue, ...] = ()
+
+    @property
+    def is_valid(self) -> bool:
+        """工作簿契约是否通过。"""
+        return not any(issue.severity is ValidationSeverity.ERROR for issue in self.issues)

@@ -1,0 +1,13 @@
+.vscode/
+input/*.xlsx
+input/*.arxml
+output/
+outputs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+*.tmp.arxml
+.*.tmp.arxml

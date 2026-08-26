@@ -1,7 +1,7 @@
 # 本文件用于声明 davinci-gw 工程的构建方式、基础元数据和 Python 版本要求。
 
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=69,<82"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,7 +9,24 @@ name = "davinci-gw"
 version = "0.1.0"
 description = "根据标准化网关路由配置表更新 DaVinci 工程 ARXML。"
 requires-python = ">=3.12"
+dependencies = [
+  "openpyxl>=3.1,<4",
+  "lxml>=5.2,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+davinci-gw = "davinci_gw.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-ra"
+markers = [
+  "slow: 使用本地真实 Excel 和大型 ARXML 的慢速集成测试",
+]
