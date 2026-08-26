@@ -33,6 +33,21 @@ class ValidationCategory(str, Enum):
     SYSTEM = "SYSTEM"
 
 
+class MutationKind(str, Enum):
+    """第02轮支持的、按模块解耦的新增操作类型。"""
+
+    ECUC_PDU = "ECUC_PDU"
+    CANIF_RX_PDU = "CANIF_RX_PDU"
+    CANIF_TX_PDU = "CANIF_TX_PDU"
+    PDUR_ROUTING_PATH = "PDUR_ROUTING_PATH"
+    PDUR_SRC_PDU = "PDUR_SRC_PDU"
+    PDUR_DEST_PDU = "PDUR_DEST_PDU"
+    COM_GW_MAPPING = "COM_GW_MAPPING"
+    COM_GW_SOURCE = "COM_GW_SOURCE"
+    COM_GW_DESTINATION = "COM_GW_DESTINATION"
+    COM_SIGNAL_TIMEOUT = "COM_SIGNAL_TIMEOUT"
+
+
 @dataclass(frozen=True, slots=True)
 class SourceLocation:
     """外部输入中的可定位来源。"""
@@ -198,3 +213,93 @@ class WorkbookReadResult:
     def is_valid(self) -> bool:
         """工作簿契约是否通过。"""
         return not any(issue.severity is ValidationSeverity.ERROR for issue in self.issues)
+
+
+@dataclass(frozen=True, slots=True)
+class MutationOperation:
+    """与 lxml 无关的单个新增或参数补充操作。"""
+
+    kind: MutationKind
+    parent_path: str
+    short_name: str
+    definition_ref: str
+    parameters: tuple[tuple[str, str], ...] = ()
+    references: tuple[tuple[str, str], ...] = ()
+    source_locations: tuple[SourceLocation, ...] = ()
+
+    @property
+    def object_path(self) -> str:
+        """返回操作完成后的完整 AUTOSAR 路径。"""
+        return f"{self.parent_path.rstrip('/')}/{self.short_name}"
+
+    def parameter(self, definition_ref: str) -> str | None:
+        """按定义引用读取计划参数。"""
+        return dict(self.parameters).get(definition_ref)
+
+    def reference(self, definition_ref: str) -> str | None:
+        """按定义引用读取计划引用。"""
+        return dict(self.references).get(definition_ref)
+
+
+@dataclass(frozen=True, slots=True)
+class MutationPlan:
+    """全部 ADD 完成预检后的不可变变更计划。"""
+
+    operations: tuple[MutationOperation, ...] = ()
+    issues: tuple[ValidationIssue, ...] = ()
+    direct_added_count: int = 0
+    direct_existing_count: int = 0
+    direct_skipped_count: int = 0
+    signal_added_count: int = 0
+    signal_existing_count: int = 0
+    signal_skipped_count: int = 0
+    expected_new_uuids: tuple[str, ...] = ()
+
+    @property
+    def errors(self) -> tuple[ValidationIssue, ...]:
+        """返回阻止整个生成过程的问题。"""
+        return tuple(issue for issue in self.issues if issue.severity is ValidationSeverity.ERROR)
+
+    @property
+    def expected_paths(self) -> tuple[str, ...]:
+        """返回输出验证必须能唯一定位的新增对象路径。"""
+        return tuple(operation.object_path for operation in self.operations
+                     if operation.kind is not MutationKind.COM_SIGNAL_TIMEOUT)
+
+    @property
+    def expected_internal_references(self) -> tuple[str, ...]:
+        """返回新增操作中应在本文件内解析的 VALUE-REF 目标。"""
+        return tuple(value for operation in self.operations for _, value in operation.references)
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationReport:
+    """generate 应用接口和 CLI 共同使用的结构化结果。"""
+
+    validation: ValidationReport
+    plan: MutationPlan | None = None
+    output_path: Path | None = None
+    output_written: bool = False
+    output_validated: bool = False
+    issues: tuple[ValidationIssue, ...] = ()
+
+    @property
+    def all_issues(self) -> tuple[ValidationIssue, ...]:
+        """合并输入校验、规划和输出阶段问题。"""
+        planned = self.plan.issues if self.plan else ()
+        return self.validation.issues + planned + self.issues
+
+    @property
+    def errors(self) -> tuple[ValidationIssue, ...]:
+        """返回所有阻断问题。"""
+        return tuple(issue for issue in self.all_issues if issue.severity is ValidationSeverity.ERROR)
+
+    @property
+    def warnings(self) -> tuple[ValidationIssue, ...]:
+        """返回已跳过路由和其他非阻断提示。"""
+        return tuple(issue for issue in self.all_issues if issue.severity is ValidationSeverity.WARNING)
+
+    @property
+    def is_success(self) -> bool:
+        """输出已原子写出并通过复核时生成成功。"""
+        return not self.errors and self.output_written and self.output_validated

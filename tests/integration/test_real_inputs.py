@@ -6,7 +6,10 @@ import hashlib
 from pathlib import Path
 
 import pytest
+import warnings
+from openpyxl import load_workbook
 
+from davinci_gw.application.generate import generate_inputs
 from davinci_gw.application.preview import preview_inputs
 from davinci_gw.application.validate import inspect_baseline, write_roundtrip_copy
 
@@ -24,6 +27,26 @@ def fingerprint(path: Path) -> tuple[int, int, str]:
             digest.update(chunk)
     stat = path.stat()
     return stat.st_size, stat.st_mtime_ns, digest.hexdigest()
+
+
+def make_add_only_copy(source: Path, target: Path) -> Path:
+    """在 tmp_path 中删除 DELETE 数据行，不修改或另存真实输入。"""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Data Validation extension is not supported.*")
+        workbook = load_workbook(source)
+    try:
+        for sheet_name in ("直接报文路由", "信号路由"):
+            sheet = workbook[sheet_name]
+            headers = {cell.value: cell.column for cell in sheet[1]}
+            operation_column = headers["操作类型"]
+            delete_rows = [row for row in range(2, sheet.max_row + 1)
+                           if str(sheet.cell(row=row, column=operation_column).value or "").strip().upper() == "DELETE"]
+            for row in reversed(delete_rows):
+                sheet.delete_rows(row)
+        workbook.save(target)
+    finally:
+        workbook.close()
+    return target
 
 
 @pytest.mark.slow
@@ -46,5 +69,21 @@ def test_real_inputs_and_roundtrip(tmp_path: Path) -> None:
     }
     output = tmp_path / "roundtrip.arxml"
     write_roundtrip_copy(BASELINE, output)
+    assert inspect_baseline(output).schema_filename == "AUTOSAR_00049.xsd"
+    assert fingerprint(BASELINE) == before
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not CONFIG.exists() or not BASELINE.exists(), reason="本地真实输入不存在")
+def test_real_add_only_generation_skips_missing_dbc_without_stopping(tmp_path: Path) -> None:
+    before = fingerprint(BASELINE)
+    add_only = make_add_only_copy(CONFIG, tmp_path / "真实路由_add_only_v4.84.xlsx")
+    output = tmp_path / "real_generated.arxml"
+    report = generate_inputs(add_only, BASELINE, output)
+    assert report.is_success, [issue.message for issue in report.all_issues]
+    assert report.plan.direct_added_count + report.plan.direct_existing_count + report.plan.direct_skipped_count == 9
+    assert report.plan.signal_added_count + report.plan.signal_existing_count + report.plan.signal_skipped_count == 2
+    assert report.plan.signal_skipped_count == 2
+    assert any("DBC" in issue.message or "ComIPdu" in issue.message for issue in report.warnings)
     assert inspect_baseline(output).schema_filename == "AUTOSAR_00049.xsd"
     assert fingerprint(BASELINE) == before

@@ -1,4 +1,4 @@
-"""第01轮中文命令行入口，仅公开 validate 和 preview。"""
+"""中文命令行入口，提供 validate、preview 和第02轮 ADD generate。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,14 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from davinci_gw.application.preview import preview_inputs
+from davinci_gw.application.generate import generate_inputs
 from davinci_gw.application.validate import validate_inputs
-from davinci_gw.domain.models import PreviewReport, ValidationCategory, ValidationReport
+from davinci_gw.domain.models import (
+    GenerationReport,
+    PreviewReport,
+    ValidationCategory,
+    ValidationReport,
+)
 
 EXIT_OK = 0
 EXIT_CONTRACT_ERROR = 2
@@ -31,6 +37,11 @@ def _parser() -> argparse.ArgumentParser:
         child = subparsers.add_parser(command, help=help_text)
         child.add_argument("--config", type=Path, required=True, help="标准配置表路径")
         child.add_argument("--baseline", type=Path, required=True, help="旧版完整 ARXML 路径")
+    generate = subparsers.add_parser("generate", help="应用ADD并原子写出新版完整ARXML")
+    generate.add_argument("--config", type=Path, required=True, help="标准配置表路径")
+    generate.add_argument("--baseline", type=Path, required=True, help="旧版完整ARXML路径")
+    generate.add_argument("--output", type=Path, required=True, help="新版完整ARXML输出路径")
+    generate.add_argument("--overwrite", action="store_true", help="显式允许覆盖已有输出；永不覆盖基线")
     return parser
 
 
@@ -95,6 +106,30 @@ def _render_preview(preview: PreviewReport) -> None:
     print("  当前开发轮次尚未执行路由写入。")
 
 
+def _render_generation(report: GenerationReport) -> None:
+    """渲染新增、幂等跳过、缺失跳过和输出验证结果。"""
+    for issue in report.errors:
+        print(f"错误：{issue.message}")
+    for issue in report.warnings:
+        print(f"警告：{issue.message}")
+    if not report.is_success:
+        print(f"摘要：错误 {len(report.errors)}，警告 {len(report.warnings)}；未生成输出。")
+        return
+    plan = report.plan
+    data = report.validation.workbook_data
+    print(f"目标版本：{data.target_version if data else '未识别'}\n")
+    print("直接报文路由：")
+    print(f"  新增：{plan.direct_added_count}")
+    print(f"  已存在并跳过：{plan.direct_existing_count}")
+    print(f"  缺失或不支持并跳过：{plan.direct_skipped_count}\n")
+    print("信号路由：")
+    print(f"  新增：{plan.signal_added_count}")
+    print(f"  已存在并跳过：{plan.signal_existing_count}")
+    print(f"  缺失或不支持并跳过：{plan.signal_skipped_count}\n")
+    print(f"输出文件：{report.output_path}")
+    print("输出验证：通过")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """执行 CLI 并返回稳定退出码；普通模式不显示 Python Traceback。"""
     parser = _parser()
@@ -106,6 +141,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.debug:
                 _render_debug_causes(report)
             return _exit_code(report)
+        if args.command == "generate":
+            report = generate_inputs(
+                args.config, args.baseline, args.output, overwrite=args.overwrite,
+            )
+            _render_generation(report)
+            if args.debug:
+                for issue in report.all_issues:
+                    if issue.cause is not None:
+                        traceback.print_exception(issue.cause)
+            if report.is_success:
+                return EXIT_OK
+            if any(issue.category is ValidationCategory.SYSTEM for issue in report.errors):
+                return EXIT_SYSTEM_ERROR
+            return EXIT_CONTRACT_ERROR
         preview = preview_inputs(args.config, args.baseline)
         _render_preview(preview)
         if args.debug:

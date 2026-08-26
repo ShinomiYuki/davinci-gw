@@ -6,11 +6,11 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from lxml import etree
 
-from davinci_gw.domain.errors import ArxmlStructureError, OutputWriteError
+from davinci_gw.domain.errors import ArxmlStructureError, OutputValidationError, OutputWriteError
 from davinci_gw.domain.models import ArxmlInspectionResult, ArxmlModuleInfo
 
 from .index import ArxmlIndex, autosar_path
@@ -136,8 +136,13 @@ class ArxmlDocument:
         self._validate_root()
         return ArxmlIndex(self.root)
 
-    def write_atomic(self, output_path: str | Path, overwrite: bool = False) -> Path:
-        """同目录临时序列化、复核后再原子替换为目标文件。"""
+    def write_atomic(
+        self,
+        output_path: str | Path,
+        overwrite: bool = False,
+        validator: Callable[["ArxmlDocument"], None] | None = None,
+    ) -> Path:
+        """同目录临时序列化、复核新增内容后再原子替换为目标文件。"""
         output = Path(output_path).expanduser().resolve()
         if output == self.source_path:
             raise OutputWriteError("输出路径不能与输入基准文件相同，请选择新的输出文件。")
@@ -164,11 +169,14 @@ class ArxmlDocument:
             with temp_path.open("rb+") as stream:
                 stream.flush()
                 os.fsync(stream.fileno())
-            ArxmlDocument.load(temp_path).inspect()
+            temporary_document = ArxmlDocument.load(temp_path)
+            temporary_document.inspect()
+            if validator is not None:
+                validator(temporary_document)
             os.replace(temp_path, output)
             temp_path = None
             return output
-        except OutputWriteError:
+        except (OutputWriteError, OutputValidationError):
             raise
         except Exception as exc:
             raise OutputWriteError(

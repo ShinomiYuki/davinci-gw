@@ -1,2 +1,298 @@
-"""本文件用于规划直接报文路由的一对一变更，并在内部组织一对多源路由。"""
+"""直接报文 ADD 分组与完整预检；一个源对象复用到多个目标路由腿。"""
 
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass
+
+from davinci_gw.arxml.index import autosar_path
+from davinci_gw.domain.models import (
+    DirectRouteChange,
+    MutationOperation,
+    SourceLocation,
+    ValidationIssue,
+    ValidationSeverity,
+    WorkbookData,
+)
+from davinci_gw.modules import definitions as defs
+from davinci_gw.modules.canif_editor import CanIfEditor
+from davinci_gw.modules.common import unique_named_node
+from davinci_gw.modules.ecuc_editor import EcucEditor
+from davinci_gw.modules.pdur_editor import PduREditor
+
+from .naming import direct_source_name, direct_target_name, pdur_leg_name, pdur_path_name
+
+SUPPORTED_CAN_TYPES = {"STANDARD_CAN", "STANDARD_FD_CAN", "EXTENDED_CAN", "EXTENDED_FD_CAN"}
+SUPPORTED_LENGTH_STRATEGIES = {"IGNORE", "SHORTEN", "DISCARD"}
+SUPPORTED_SWITCHES = {"ENABLE", "DISABLE"}
+
+
+@dataclass(frozen=True, slots=True)
+class DirectPlanningResult:
+    """直接报文规划阶段的操作、问题和路由腿统计。"""
+
+    operations: tuple[MutationOperation, ...]
+    issues: tuple[ValidationIssue, ...]
+    added: int
+    existing: int
+    skipped: int
+
+
+def _locations(routes: list[DirectRouteChange]) -> tuple[SourceLocation, ...]:
+    return tuple(route.source for route in routes)
+
+
+def _issue(
+    workbook: WorkbookData, route: DirectRouteChange, code: str, detail: str, *, warning: bool,
+) -> ValidationIssue:
+    location = route.source
+    row = f"第{location.row_number}行" if location.row_number else ""
+    return ValidationIssue(
+        code=code,
+        message=(f"配置表“{workbook.path}”的“{location.sheet_name}”工作表{row}，{detail}"),
+        severity=ValidationSeverity.WARNING if warning else ValidationSeverity.ERROR,
+        file_path=workbook.path,
+        location=location,
+    )
+
+
+def _is_disabled_or_blank(value: str | None) -> bool:
+    return value is None or value.strip().upper() in {"", "DISABLE"}
+
+
+class DirectRoutePlanner:
+    """协调三个模块编辑器完成直接报文预检，但不修改 XML 树。"""
+
+    def __init__(
+        self, workbook: WorkbookData, ecuc: EcucEditor, canif: CanIfEditor, pdur: PduREditor,
+    ) -> None:
+        self.workbook = workbook
+        self.ecuc = ecuc
+        self.canif = canif
+        self.pdur = pdur
+        self.references = {entry.channel_name: entry for entry in workbook.reference_data}
+
+    def _validate_source(self, routes: list[DirectRouteChange]) -> ValidationIssue | None:
+        route = routes[0]
+        shared = {(item.source_length, item.source_message_type, item.source_rx_indication_ul,
+                   item.source_checksum_enabled, item.source_dlc_check_enabled) for item in routes}
+        if len(shared) != 1:
+            return _issue(
+                self.workbook, route, "DIRECT_SOURCE_CONFLICT",
+                "同一源报文的一对多路由填写了不同的源端参数。请统一Length、类型和源端策略后重试。",
+                warning=False,
+            )
+        if route.source_message_type not in SUPPORTED_CAN_TYPES:
+            return _issue(
+                self.workbook, route, "DIRECT_SOURCE_TYPE_SKIPPED",
+                f"源报文类型“{route.source_message_type}”当前无法安全映射，已跳过该源的全部ADD；"
+                "请改为支持的CAN类型或先在DaVinci中补充同类型模板。",
+                warning=True,
+            )
+        if (route.source_dlc_check_enabled or "").upper() not in SUPPORTED_SWITCHES:
+            return _issue(
+                self.workbook, route, "DIRECT_SOURCE_SWITCH_SKIPPED",
+                f"源端Dlc Check值“{route.source_dlc_check_enabled}”不支持，已跳过该源的全部ADD；"
+                "请使用Enable或Disable。", warning=True,
+            )
+        if not _is_disabled_or_blank(route.source_checksum_enabled):
+            return _issue(
+                self.workbook, route, "DIRECT_CHECKSUM_SKIPPED",
+                "源端Checksum使能在当前真实CanIf模板中没有可安全映射的参数，已跳过该源的全部ADD；"
+                "请先确认DaVinci项目的Checksum配置方式。", warning=True,
+            )
+        if (route.source_rx_indication_ul or "").upper() != "PDUR":
+            return _issue(
+                self.workbook, route, "DIRECT_RX_UL_SKIPPED",
+                f"源端RxIndicationUL“{route.source_rx_indication_ul}”不是PDUR，已跳过该源的全部ADD。",
+                warning=True,
+            )
+        return None
+
+    def _validate_target(self, route: DirectRouteChange) -> ValidationIssue | None:
+        if route.target_message_type not in SUPPORTED_CAN_TYPES:
+            return _issue(
+                self.workbook, route, "DIRECT_TARGET_TYPE_SKIPPED",
+                f"目标报文类型“{route.target_message_type}”当前无法安全映射，已跳过该路由腿。",
+                warning=True,
+            )
+        if (route.target_truncation_enabled or "").upper() not in SUPPORTED_SWITCHES:
+            return _issue(
+                self.workbook, route, "DIRECT_TARGET_SWITCH_SKIPPED",
+                f"目标端Truncation值“{route.target_truncation_enabled}”不支持，已跳过该路由腿；"
+                "请使用Enable或Disable。", warning=True,
+            )
+        strategy = (route.length_strategy or "").upper()
+        if strategy not in SUPPORTED_LENGTH_STRATEGIES:
+            return _issue(
+                self.workbook, route, "DIRECT_LENGTH_STRATEGY_SKIPPED",
+                f"Length Strategy“{route.length_strategy}”无法映射，已跳过该路由腿。",
+                warning=True,
+            )
+        if not _is_disabled_or_blank(route.target_checksum_enabled) or not _is_disabled_or_blank(route.target_pn_filter_enabled):
+            return _issue(
+                self.workbook, route, "DIRECT_TARGET_POLICY_SKIPPED",
+                "目标端Checksum或PnFilter在当前真实模板中没有可安全映射的参数，已跳过该路由腿。",
+                warning=True,
+            )
+        return None
+
+    def _channel_object(
+        self, route: DirectRouteChange, *, source: bool,
+    ) -> tuple[str | None, ValidationIssue | None]:
+        channel = route.key.source_channel if source else route.key.target_channel
+        entry = self.references.get(channel)
+        role = "源" if source else "目标"
+        field = "CanIfHrh名称" if source else "CanIfTxBuffer名称"
+        expected_definition = defs.CANIF_HRH if source else defs.CANIF_BUFFER
+        if entry is None:
+            return None, _issue(
+                self.workbook, route, "DIRECT_CHANNEL_SKIPPED",
+                f"{role}CAN通道“{channel}”未在“引用数据”中定义，已跳过该路由腿；请补充通道映射。",
+                warning=True,
+            )
+        name = entry.hrh_name if source else entry.tx_buffer_name
+        if not name:
+            return None, _issue(
+                self.workbook, route, "DIRECT_CHANNEL_REFERENCE_SKIPPED",
+                f"{role}CAN通道“{channel}”缺少“{field}”，已跳过该路由腿；请在引用数据中补充。",
+                warning=True,
+            )
+        state, node = unique_named_node(self.canif.index, self.canif.document.namespace, name, expected_definition)
+        if state == "MISSING":
+            return None, _issue(
+                self.workbook, route, "DIRECT_ARXML_REFERENCE_SKIPPED",
+                f"基准ARXML中找不到{role}通道引用对象“{name}”，可能尚未导入对应DBC，已跳过该路由腿；"
+                "请先更新DBC或核对引用数据。", warning=True,
+            )
+        if state == "AMBIGUOUS":
+            return None, _issue(
+                self.workbook, route, "DIRECT_ARXML_REFERENCE_AMBIGUOUS",
+                f"基准ARXML中“{name}”存在多个{role}通道候选，无法安全选择。请在DaVinci中消除重名后重试。",
+                warning=False,
+            )
+        return autosar_path(node, self.canif.document.namespace), None
+
+    def plan(self, routes: tuple[DirectRouteChange, ...]) -> DirectPlanningResult:
+        """按源身份稳定分组并对所有 ADD 完成预检，不修改 XML。"""
+        groups: dict[tuple[str, int, str], list[DirectRouteChange]] = defaultdict(list)
+        for route in routes:
+            groups[(route.key.source_message_name, route.key.source_can_id, route.key.source_channel)].append(route)
+        operations: list[MutationOperation] = []
+        issues: list[ValidationIssue] = []
+        added = existing = skipped = 0
+
+        for group_key in sorted(groups):
+            group = sorted(groups[group_key], key=lambda item: (
+                item.key.target_channel, item.key.target_message_name, item.key.target_can_id,
+            ))
+            route = group[0]
+            source_issue = self._validate_source(group)
+            if source_issue:
+                issues.append(source_issue)
+                skipped += len(group)
+                continue
+            hrh_path, channel_issue = self._channel_object(route, source=True)
+            if channel_issue:
+                issues.append(channel_issue)
+                skipped += len(group)
+                continue
+
+            locations = _locations(group)
+            source_name = direct_source_name(route.key.source_message_name, route.key.source_channel)
+            path_name = pdur_path_name(route.key.source_message_name, route.key.source_can_id, route.key.source_channel)
+            src_name = pdur_leg_name(route.key.source_message_name, route.key.source_can_id, route.key.source_channel)
+            ecuc_source = self.ecuc.pdu_operation(source_name, route.source_length or 0, locations)
+            rx_probe = self.canif.rx_operation(
+                route, source_name, ecuc_source.object_path, hrh_path or "", locations,
+                allocate_handle=False,
+            )
+            pdur_path = self.pdur.path_operation(path_name, locations)
+            pdur_source_probe = self.pdur.source_operation(
+                pdur_path.object_path, src_name, ecuc_source.object_path, locations,
+                allocate_handle=False,
+            )
+            source_states = (
+                self.ecuc.inspect(ecuc_source), self.canif.inspect(rx_probe),
+                self.pdur.inspect(pdur_path), self.pdur.inspect(pdur_source_probe),
+            )
+            source_operations: list[MutationOperation] = []
+            if all(state == "MISSING" for state in source_states):
+                source_operations.extend((
+                    ecuc_source,
+                    self.canif.rx_operation(
+                        route, source_name, ecuc_source.object_path, hrh_path or "", locations,
+                        allocate_handle=True,
+                    ),
+                    pdur_path,
+                    self.pdur.source_operation(
+                        pdur_path.object_path, src_name, ecuc_source.object_path, locations,
+                        allocate_handle=True,
+                    ),
+                ))
+            elif not all(state == "EXISTING" for state in source_states):
+                issues.append(_issue(
+                    self.workbook, route, "DIRECT_SOURCE_CHAIN_CONFLICT",
+                    f"源路由链“{pdur_path.object_path}”只存在部分对象或同名对象参数不同，"
+                    f"状态为{source_states}。请在DaVinci中修复该链后重试。", warning=False,
+                ))
+                continue
+
+            group_operations: list[MutationOperation] = []
+            group_added = 0
+            for target in group:
+                target_issue = self._validate_target(target)
+                if target_issue:
+                    issues.append(target_issue)
+                    skipped += 1
+                    continue
+                buffer_path, target_channel_issue = self._channel_object(target, source=False)
+                if target_channel_issue:
+                    issues.append(target_channel_issue)
+                    skipped += 1
+                    continue
+                target_name = direct_target_name(target.key.target_message_name, target.key.target_channel)
+                dest_name = pdur_leg_name(
+                    target.key.target_message_name, target.key.target_can_id, target.key.target_channel,
+                )
+                target_location = (target.source,)
+                ecuc_target = self.ecuc.pdu_operation(target_name, target.target_length or 0, target_location)
+                tx_probe = self.canif.tx_operation(
+                    target, target_name, ecuc_target.object_path, buffer_path or "", target_location,
+                    allocate_handle=False,
+                )
+                dest_probe = self.pdur.destination_operation(
+                    pdur_path.object_path, dest_name, ecuc_target.object_path,
+                    (target.length_strategy or "").upper(), target_location,
+                    allocate_handle=False,
+                )
+                target_states = (
+                    self.ecuc.inspect(ecuc_target), self.canif.inspect(tx_probe), self.pdur.inspect(dest_probe),
+                )
+                if all(state == "MISSING" for state in target_states):
+                    group_operations.extend((
+                        ecuc_target,
+                        self.canif.tx_operation(
+                            target, target_name, ecuc_target.object_path, buffer_path or "", target_location,
+                            allocate_handle=True,
+                        ),
+                        self.pdur.destination_operation(
+                            pdur_path.object_path, dest_name, ecuc_target.object_path,
+                            (target.length_strategy or "").upper(), target_location,
+                            allocate_handle=True,
+                        ),
+                    ))
+                    group_added += 1
+                elif all(state == "EXISTING" for state in target_states):
+                    existing += 1
+                else:
+                    issues.append(_issue(
+                        self.workbook, target, "DIRECT_TARGET_CHAIN_CONFLICT",
+                        f"目标路由腿“{dest_probe.object_path}”只存在部分对象或同名对象参数不同，"
+                        f"状态为{target_states}。请修复冲突后重试。", warning=False,
+                    ))
+            if group_added:
+                operations.extend(source_operations)
+                operations.extend(group_operations)
+                added += group_added
+        return DirectPlanningResult(tuple(operations), tuple(issues), added, existing, skipped)

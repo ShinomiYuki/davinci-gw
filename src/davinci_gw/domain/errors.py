@@ -15,5 +15,9 @@ class OutputWriteError(DavinciGwError):
     """安全写出条件不满足或序列化失败。"""
 
 
+class OutputValidationError(DavinciGwError):
+    """临时输出已写完但新增对象或内部引用复核失败。"""
+
+
 class InputContractError(DavinciGwError):
     """标准输入文件未满足已冻结的输入契约。"""
