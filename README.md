@@ -15,6 +15,21 @@
 
 当前不支持直接报文 LIN 路由、诊断/CanTp 路由、多 ARXML 合并、DaVinci GUI 自动操作和图形界面。
 
+## 本地 MCP 服务
+
+第05轮提供 `davinci-gw-mcp.exe`：一个无窗口、纯本地、长生命周期的 STDIO MCP 服务，可由 Codex 等支持本地 STDIO MCP 的 AI 客户端启动。它不监听端口，不提供 HTTP/SSE/WebSocket，不登录云服务，不上传文件，也不包含自动更新或遥测。
+
+服务只有四个工具：
+
+- `get_gateway_capabilities`：查询版本、能力和安全策略。
+- `validate_gateway_inputs`：只读校验配置表与基准 ARXML。
+- `preview_gateway_update`：完整预览并返回当前进程内的一次性 `preparation_id`。
+- `generate_gateway_arxml`：用户确认预览后，使用 `preparation_id` 生成一个新的 ARXML。
+
+固定工作流是 `validate → preview → 用户确认 → generate`。生成工具不接受配置表或基准路径，不能绕过预览；`preparation_id` 不能跨 MCP 进程使用。所有路径必须是带盘符的本地 Windows 绝对路径，URL、UNC、设备路径、命名管道和网络共享会被拒绝。输出目录必须已存在，输出文件必须尚不存在，且不得通过大小写、规范化、符号链接或目录联接指向基准 ARXML。
+
+MCP 只返回有界 JSON 摘要、问题定位和输出文件的大小/SHA-256，不返回 Excel 或 ARXML 内容。标准输出仅用于 MCP 协议；诊断日志位于 `%LOCALAPPDATA%\DaVinciGW\logs\mcp.log`。完整安装、Codex 配置、审批和卸载说明见 [MCP 本地安装与使用](docs/MCP本地安装与使用.md)。
+
 ## 公共应用接口
 
 第04轮提供了供未来 GUI 与本地 MCP 共同依赖的 `GatewayFacade`。它不依赖 Qt、MCP 协议或 lxml 类型，所有返回值都是冻结的公共 DTO，可通过 `to_dict()` 或 `to_json()` 得到稳定的 JSON 数据。
@@ -42,7 +57,7 @@ Prepared Session 只存在于当前进程：默认有效期 15 分钟、最多�
 
 公共接口接受可选的中立进度观察者和线程安全取消令牌。取消只在安全阶段边界生效；原子替换前取消会清理临时文件且不生成目标，替换完成后即视为已提交，不会误报取消。观察者自身异常被隔离，不改变核心操作结果。
 
-现有 CLI 保持原内部应用链路，作为回归和开发入口，避免第04轮改变已有输出文本、退出码和用户习惯。未来 GUI 与本地 MCP 应直接适配 `GatewayFacade`，本轮没有实现或安装任何 GUI/MCP 服务。
+现有 CLI 保持原内部应用链路，作为回归和开发入口，避免 MCP 改变已有输出文本、退出码和用户习惯。MCP 是可选适配层，只依赖 `GatewayFacade`、公共 DTO、进度观察者与取消令牌；核心 CLI 的运行依赖中不强制安装 MCP SDK。
 
 ## 需要准备什么
 
@@ -64,6 +79,13 @@ python -m pip install .
 
 ```powershell
 python -m pip install -e ".[dev]"
+```
+
+只安装 Python MCP 可选依赖：
+
+```powershell
+python -m pip install ".[mcp]"
+python -m davinci_gw.mcp
 ```
 
 ## 校验、预览与生成
@@ -107,4 +129,8 @@ LIN 信号端点不使用 `PSMM ↔ LIN04` 之类的固定项目映射。当配�
 - 任一规划、应用、序列化或临时输出验证失败，整个工作副本丢弃，不修改基准，不留目标或临时半成品。
 - 输出会重新解析，复核四模块、新增/删除/保留语义、参数删除、内部引用、UUID 和 Handle ID。
 
-完整字段规则见 [输入契约](docs/输入契约.md)，删除设计见 [第03轮开发日志](docs/第03轮开发日志.md)，公共接口与扩展架构见 [第04轮开发日志](docs/第04轮开发日志.md)。
+完整字段规则见 [输入契约](docs/输入契约.md)，删除设计见 [第03轮开发日志](docs/第03轮开发日志.md)，公共接口与扩展架构见 [第04轮开发日志](docs/第04轮开发日志.md)，MCP 的交付证据见 [第05轮开发日志](docs/第05轮开发日志.md)。
+
+## 许可证
+
+本项目使用 [MIT License](LICENSE)。

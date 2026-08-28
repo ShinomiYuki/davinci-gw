@@ -198,6 +198,8 @@ class CapabilitiesDto(SerializableDto):
     features: tuple[FeatureCapabilityDto, ...]
     operations: tuple[str, ...]
     schema_version: str = SCHEMA_VERSION
+    session_ttl_seconds: float = 900.0
+    session_capacity: int = 8
 
 
 @dataclass(frozen=True, slots=True)

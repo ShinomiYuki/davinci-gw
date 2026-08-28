@@ -1,0 +1,11 @@
+# 将 command 替换为安装后的绝对路径。官方 Codex 配置位置为 ~/.codex/config.toml。
+[mcp_servers.davinci_gateway]
+command = 'C:\Users\YOUR_NAME\AppData\Local\Programs\DaVinciGW\davinci-gw-mcp.exe'
+startup_timeout_sec = 30
+tool_timeout_sec = 3600
+enabled = true
+required = false
+default_tools_approval_mode = "writes"
+
+[mcp_servers.davinci_gateway.tools.generate_gateway_arxml]
+approval_mode = "prompt"

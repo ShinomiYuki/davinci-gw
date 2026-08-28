@@ -54,6 +54,8 @@ class GatewayFacade:
         return CapabilitiesDto(
             self.features.capabilities(),
             ("VALIDATE", "PREPARE", "PREVIEW", "COMMIT_PREPARED", "GENERATE", "DISCARD", "CLEANUP"),
+            session_ttl_seconds=self.sessions.ttl_seconds,
+            session_capacity=self.sessions.max_sessions,
         )
 
     def get_capabilities(self) -> CapabilitiesDto:
