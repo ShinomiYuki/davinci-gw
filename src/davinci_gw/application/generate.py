@@ -1,9 +1,10 @@
-"""编排第03轮统一 DELETE/ADD 投影事务、输出验证和原子写出。"""
+"""统一 DELETE/ADD 投影事务、输出验证和原子写出。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from lxml import etree
 
@@ -43,6 +44,7 @@ class PreparedTransaction:
 
 def prepare_transaction(
     config_path: str | Path, baseline_path: str | Path,
+    checkpoint: Callable[[str], None] | None = None,
 ) -> PreparedTransaction:
     """只读加载输入并在内存工作树完成 DELETE 投影和 ADD，不写任何文件。"""
     config = Path(config_path).expanduser().resolve()
@@ -51,7 +53,9 @@ def prepare_transaction(
     workbook_data = None
     inspection = None
     document = None
+    check = checkpoint or (lambda _stage: None)
 
+    check("before_workbook")
     if not config.is_file():
         issues.append(_missing_file(config, "配置表"))
     else:
@@ -61,6 +65,7 @@ def prepare_transaction(
             issues.extend(workbook_result.issues)
         except Exception as exc:
             issues.append(_system_issue(config, "配置表", "无法读取", exc))
+    check("after_workbook")
     if not baseline.is_file():
         issues.append(_missing_file(baseline, "基准ARXML"))
     else:
@@ -71,10 +76,12 @@ def prepare_transaction(
             issues.append(_generation_issue("ARXML_STRUCTURE_INVALID", str(exc), baseline))
         except (etree.XMLSyntaxError, OSError, ValueError) as exc:
             issues.append(_system_issue(baseline, "基准ARXML", "无法解析", exc))
+    check("after_baseline")
 
     validation = ValidationReport(tuple(issues), workbook_data, inspection)
     if not validation.is_valid or workbook_data is None or document is None:
         return PreparedTransaction(validation)
+    check("before_plan")
     try:
         plan = TransactionCoordinator(document, workbook_data).plan_and_apply()
     except ArxmlStructureError as exc:
@@ -93,6 +100,7 @@ def prepare_transaction(
                 cause=exc,
             ),),
         )
+    check("after_plan")
     return PreparedTransaction(validation, plan, document)
 
 

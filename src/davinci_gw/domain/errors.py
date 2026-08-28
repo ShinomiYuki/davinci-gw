@@ -19,5 +19,13 @@ class OutputValidationError(DavinciGwError):
     """临时输出已写完但新增对象或内部引用复核失败。"""
 
 
+class OutputCommitAbortedError(DavinciGwError):
+    """临时文件已完成，但在原子替换前因可识别原因安全终止。"""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 class InputContractError(DavinciGwError):
     """标准输入文件未满足已冻结的输入契约。"""

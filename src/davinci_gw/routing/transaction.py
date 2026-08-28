@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.domain.models import MutationPlan, WorkbookData
+from davinci_gw.mutations import MutationHandlerRegistry
 
 from .add import AddCoordinator
 from .delete import DeleteCoordinator
@@ -38,9 +39,16 @@ def _merge_plans(delete: MutationPlan, add: MutationPlan) -> MutationPlan:
 class TransactionCoordinator:
     """使用单个不可复用工作树实现全部成功或全部丢弃的事务。"""
 
-    def __init__(self, document: ArxmlDocument, workbook: WorkbookData) -> None:
+    def __init__(
+        self,
+        document: ArxmlDocument,
+        workbook: WorkbookData,
+        handler_registry: MutationHandlerRegistry | None = None,
+    ) -> None:
+        """可选注入处理器注册表，默认保持现有四模块行为。"""
         self.document = document
         self.workbook = workbook
+        self.handler_registry = handler_registry
 
     def plan_and_apply(self) -> MutationPlan:
         """先形成 DELETE 投影，再在新索引上规划 ADD，最后应用新增。"""
@@ -54,7 +62,9 @@ class TransactionCoordinator:
         projected_index = delete_coordinator.apply(delete_plan)
 
         # 此处重新构造全部编辑器，它们共享删除后的新索引；绝不读取删除前的路径或引用计数。
-        add_coordinator = AddCoordinator(self.document, self.workbook, projected_index)
+        add_coordinator = AddCoordinator(
+            self.document, self.workbook, projected_index, self.handler_registry,
+        )
         add_plan = add_coordinator.plan()
         combined = _merge_plans(delete_plan, add_plan)
         if combined.errors:

@@ -10,7 +10,12 @@ from typing import Any, Callable
 
 from lxml import etree
 
-from davinci_gw.domain.errors import ArxmlStructureError, OutputValidationError, OutputWriteError
+from davinci_gw.domain.errors import (
+    ArxmlStructureError,
+    OutputCommitAbortedError,
+    OutputValidationError,
+    OutputWriteError,
+)
 from davinci_gw.domain.models import ArxmlInspectionResult, ArxmlModuleInfo
 
 from .index import ArxmlIndex, autosar_path
@@ -141,6 +146,7 @@ class ArxmlDocument:
         output_path: str | Path,
         overwrite: bool = False,
         validator: Callable[["ArxmlDocument"], None] | None = None,
+        before_replace: Callable[[], None] | None = None,
     ) -> Path:
         """同目录临时序列化、复核新增内容后再原子替换为目标文件。"""
         output = Path(output_path).expanduser().resolve()
@@ -173,10 +179,12 @@ class ArxmlDocument:
             temporary_document.inspect()
             if validator is not None:
                 validator(temporary_document)
+            if before_replace is not None:
+                before_replace()
             os.replace(temp_path, output)
             temp_path = None
             return output
-        except (OutputWriteError, OutputValidationError):
+        except (OutputWriteError, OutputValidationError, OutputCommitAbortedError):
             raise
         except Exception as exc:
             raise OutputWriteError(

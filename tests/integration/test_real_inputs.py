@@ -9,9 +9,11 @@ import pytest
 import warnings
 from openpyxl import load_workbook
 
+from davinci_gw.application.facade import GatewayFacade
 from davinci_gw.application.generate import generate_inputs
 from davinci_gw.application.preview import preview_inputs
 from davinci_gw.application.validate import inspect_baseline
+from davinci_gw.contracts import OperationStatus, UpdateRequestDto
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,14 +71,16 @@ def test_real_inputs_preview_and_full_transaction_generation(tmp_path: Path) -> 
         "EcuC": "/MICROSAR/EcuC", "PduR": "/MICROSAR/PduR",
     }
     output = tmp_path / "real_full_transaction.arxml"
-    report = generate_inputs(CONFIG, BASELINE, output)
-    assert report.is_success, [issue.message for issue in report.all_issues]
-    assert report.plan.direct_added_count + report.plan.direct_existing_count + \
-        report.plan.direct_skipped_count == 9
-    assert report.plan.direct_deleted_count + report.plan.direct_missing_count == 1
-    assert report.plan.signal_added_count + report.plan.signal_existing_count + \
-        report.plan.signal_skipped_count == 2
-    assert report.plan.signal_deleted_count + report.plan.signal_missing_count == 2
+    facade = GatewayFacade()
+    prepared = facade.prepare(UpdateRequestDto(str(CONFIG), str(BASELINE)))
+    assert prepared.status is OperationStatus.SUCCESS, [issue.message for issue in prepared.issues]
+    features = {item.feature_id: item for item in prepared.preview.features}
+    direct = {item.key: item.value for item in features["direct_message"].metrics}
+    signal = {item.key: item.value for item in features["signal_route"].metrics}
+    assert (direct["requested_add"], direct["requested_delete"]) == (9, 1)
+    assert (signal["requested_add"], signal["requested_delete"]) == (2, 2)
+    result = facade.commit_prepared(prepared.session_id, str(output))
+    assert result.status is OperationStatus.SUCCESS, [issue.message for issue in result.issues]
     assert inspect_baseline(output).schema_filename == "AUTOSAR_00049.xsd"
     assert fingerprint(BASELINE) == baseline_before
     assert fingerprint(CONFIG) == config_before

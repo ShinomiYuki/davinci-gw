@@ -25,22 +25,10 @@ from davinci_gw.modules.common import (
 )
 from davinci_gw.modules.ecuc_editor import EcucEditor
 from davinci_gw.modules.pdur_editor import PduREditor
+from davinci_gw.mutations import MutationHandler, MutationHandlerRegistry
 
 from .direct_route import DirectRoutePlanner
 from .signal_route import SignalRoutePlanner
-
-ORDER = {
-    MutationKind.ECUC_PDU: 10,
-    MutationKind.CANIF_RX_PDU: 20,
-    MutationKind.CANIF_TX_PDU: 30,
-    MutationKind.PDUR_ROUTING_PATH: 40,
-    MutationKind.PDUR_SRC_PDU: 50,
-    MutationKind.PDUR_DEST_PDU: 60,
-    MutationKind.COM_GW_MAPPING: 70,
-    MutationKind.COM_GW_SOURCE: 80,
-    MutationKind.COM_GW_DESTINATION: 90,
-    MutationKind.COM_SIGNAL_TIMEOUT: 100,
-}
 
 HANDLE_DEFINITIONS = frozenset({
     defs.CANIF_RX_HANDLE, defs.CANIF_TX_HANDLE, defs.PDUR_SRC_HANDLE, defs.PDUR_DEST_HANDLE,
@@ -60,6 +48,7 @@ class AddCoordinator:
 
     def __init__(
         self, document: ArxmlDocument, workbook: WorkbookData, index: ArxmlIndex | None = None,
+        handler_registry: MutationHandlerRegistry | None = None,
     ) -> None:
         self.document = document
         self.workbook = workbook
@@ -69,6 +58,22 @@ class AddCoordinator:
         self.canif = CanIfEditor(document, self.index)
         self.pdur = PduREditor(document, self.index)
         self.com = ComEditor(document, self.index)
+        self.handlers = handler_registry or MutationHandlerRegistry((
+            MutationHandler("ecuc", frozenset({MutationKind.ECUC_PDU}), 10, self.ecuc.apply),
+            MutationHandler("canif_rx", frozenset({MutationKind.CANIF_RX_PDU}), 20, self.canif.apply),
+            MutationHandler("canif_tx", frozenset({MutationKind.CANIF_TX_PDU}), 30, self.canif.apply),
+            MutationHandler("pdur_path", frozenset({MutationKind.PDUR_ROUTING_PATH}), 40, self.pdur.apply),
+            MutationHandler("pdur_src", frozenset({MutationKind.PDUR_SRC_PDU}), 50, self.pdur.apply),
+            MutationHandler("pdur_dest", frozenset({MutationKind.PDUR_DEST_PDU}), 60, self.pdur.apply),
+            MutationHandler("com_mapping", frozenset({MutationKind.COM_GW_MAPPING}), 70, self.com.apply),
+            MutationHandler("com_source", frozenset({MutationKind.COM_GW_SOURCE}), 80, self.com.apply),
+            MutationHandler(
+                "com_destination", frozenset({MutationKind.COM_GW_DESTINATION}), 90, self.com.apply,
+            ),
+            MutationHandler(
+                "com_timeout", frozenset({MutationKind.COM_SIGNAL_TIMEOUT}), 100, self.com.apply,
+            ),
+        ))
 
     def _deduplicate_operations(
         self, operations: tuple[MutationOperation, ...], issues: list[ValidationIssue],
@@ -91,7 +96,7 @@ class AddCoordinator:
                     "PLAN_PATH_CONFLICT",
                     f"两个ADD计划试图以不同内容创建或修改“{key[2]}”。请检查重复名称、通道和路由参数。",
                 ))
-        return tuple(sorted(unique.values(), key=lambda item: (ORDER[item.kind], item.object_path)))
+        return self.handlers.sort_operations(tuple(unique.values()))
 
     def _preflight_operations(
         self, operations: tuple[MutationOperation, ...], issues: list[ValidationIssue],
@@ -170,17 +175,7 @@ class AddCoordinator:
             template_cache=self.template_cache,
         )
         try:
-            for operation in plan.operations:
-                if operation.kind is MutationKind.ECUC_PDU:
-                    self.ecuc.apply(context, operation)
-                elif operation.kind in {MutationKind.CANIF_RX_PDU, MutationKind.CANIF_TX_PDU}:
-                    self.canif.apply(context, operation)
-                elif operation.kind in {
-                    MutationKind.PDUR_ROUTING_PATH, MutationKind.PDUR_SRC_PDU, MutationKind.PDUR_DEST_PDU,
-                }:
-                    self.pdur.apply(context, operation)
-                else:
-                    self.com.apply(context, operation)
+            self.handlers.apply_operations(context, plan.operations)
         except Exception:
             context.rollback()
             raise

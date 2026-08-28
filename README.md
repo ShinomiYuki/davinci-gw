@@ -15,6 +15,35 @@
 
 当前不支持直接报文 LIN 路由、诊断/CanTp 路由、多 ARXML 合并、DaVinci GUI 自动操作和图形界面。
 
+## 公共应用接口
+
+第04轮提供了供未来 GUI 与本地 MCP 共同依赖的 `GatewayFacade`。它不依赖 Qt、MCP 协议或 lxml 类型，所有返回值都是冻结的公共 DTO，可通过 `to_dict()` 或 `to_json()` 得到稳定的 JSON 数据。
+
+```python
+from davinci_gw.application import GatewayFacade
+from davinci_gw.contracts import UpdateRequestDto
+
+facade = GatewayFacade()
+request = UpdateRequestDto(
+    config_path=r"input\网关路由配置表_v4.84.xlsx",
+    baseline_path=r"input\825E0GA.arxml",
+)
+prepared = facade.preview(request)
+if prepared.session_id:
+    result = facade.commit_prepared(
+        prepared.session_id,
+        r"output\825E0GA_v4.84.arxml",
+    )
+```
+
+公共入口包括能力查询、联合校验、安全预览、确认生成、一步生成、主动释放和过期清理。预览结果按当前支持的功能动态分组；增加新的路由能力时，未来界面不需要改变固定统计字段。
+
+Prepared Session 只存在于当前进程：默认有效期 15 分钟、最多保存 8 个，以随机 UUID 标识。预览时完成一次解析、规划和内存应用，提交复用同一工作树，不再次解析基准或重新规划。配置表与基准 ARXML 使用“大小、纳秒修改时间、SHA-256”三重指纹；提交开始前和原子替换前均会复核。会话成功后一次性消费，失败或取消后失效；同一会话的并发提交最多一个成功。
+
+公共接口接受可选的中立进度观察者和线程安全取消令牌。取消只在安全阶段边界生效；原子替换前取消会清理临时文件且不生成目标，替换完成后即视为已提交，不会误报取消。观察者自身异常被隔离，不改变核心操作结果。
+
+现有 CLI 保持原内部应用链路，作为回归和开发入口，避免第04轮改变已有输出文本、退出码和用户习惯。未来 GUI 与本地 MCP 应直接适配 `GatewayFacade`，本轮没有实现或安装任何 GUI/MCP 服务。
+
 ## 需要准备什么
 
 1. 上游流程生成的标准配置表，文件名为 `*_vX.x.xlsx`。
@@ -78,4 +107,4 @@ LIN 信号端点不使用 `PSMM ↔ LIN04` 之类的固定项目映射。当配�
 - 任一规划、应用、序列化或临时输出验证失败，整个工作副本丢弃，不修改基准，不留目标或临时半成品。
 - 输出会重新解析，复核四模块、新增/删除/保留语义、参数删除、内部引用、UUID 和 Handle ID。
 
-完整字段规则见 [输入契约](docs/输入契约.md)，技术设计和验证记录见 [第03轮开发日志](docs/第03轮开发日志.md)。
+完整字段规则见 [输入契约](docs/输入契约.md)，删除设计见 [第03轮开发日志](docs/第03轮开发日志.md)，公共接口与扩展架构见 [第04轮开发日志](docs/第04轮开发日志.md)。

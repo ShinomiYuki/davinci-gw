@@ -1,10 +1,11 @@
 """输入读取、预览、基准检查和安全往返写出的应用编排接口。"""
 
 from .generate import generate_inputs
+from .facade import GatewayFacade
 from .preview import preview_inputs
 from .validate import inspect_baseline, validate_inputs, write_roundtrip_copy
 
 __all__ = [
-    "generate_inputs", "inspect_baseline", "preview_inputs", "validate_inputs",
+    "GatewayFacade", "generate_inputs", "inspect_baseline", "preview_inputs", "validate_inputs",
     "write_roundtrip_copy",
 ]
