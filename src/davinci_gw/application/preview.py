@@ -4,14 +4,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from davinci_gw.domain.models import OperationType, PreviewReport
+from davinci_gw.domain.models import OperationType, PreviewReport, ValidationReport
 
-from .validate import validate_inputs
+from .generate import prepare_transaction
 
 
 def preview_inputs(config_path: str | Path, baseline_path: str | Path) -> PreviewReport:
-    """复用联合校验结果统计 ADD、DELETE 和引用数据，不执行任何写入。"""
-    validation = validate_inputs(config_path, baseline_path)
+    """在内存投影上完成 DELETE/ADD 规划并展示真实状态，不执行文件写入。"""
+    prepared = prepare_transaction(config_path, baseline_path)
+    plan_issues = prepared.plan.issues if prepared.plan else ()
+    validation = ValidationReport(
+        prepared.validation.issues + plan_issues + prepared.issues,
+        prepared.validation.workbook_data,
+        prepared.validation.arxml_inspection,
+    )
     data = validation.workbook_data
     if data is None:
         return PreviewReport(validation)
@@ -23,4 +29,5 @@ def preview_inputs(config_path: str | Path, baseline_path: str | Path) -> Previe
         direct_delete_count=sum(route.operation is OperationType.DELETE for route in data.direct_routes),
         signal_add_count=sum(route.operation is OperationType.ADD for route in data.signal_routes),
         signal_delete_count=sum(route.operation is OperationType.DELETE for route in data.signal_routes),
+        plan=prepared.plan,
     )

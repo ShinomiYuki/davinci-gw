@@ -5,12 +5,14 @@ from .models import (
     ArxmlModuleInfo,
     DirectRouteChange,
     GenerationReport,
+    MutationAction,
     MutationKind,
     MutationOperation,
     MutationPlan,
     OperationType,
     PreviewReport,
     ReferenceDataEntry,
+    RetentionDecision,
     SignalRouteChange,
     SourceLocation,
     ValidationCategory,
@@ -24,8 +26,8 @@ from .route_keys import DirectRouteKey, SignalRouteKey
 
 __all__ = [
     "ArxmlInspectionResult", "ArxmlModuleInfo", "DirectRouteChange", "DirectRouteKey",
-    "GenerationReport", "MutationKind", "MutationOperation", "MutationPlan",
-    "OperationType", "PreviewReport", "ReferenceDataEntry", "SignalRouteChange",
+    "GenerationReport", "MutationAction", "MutationKind", "MutationOperation", "MutationPlan",
+    "OperationType", "PreviewReport", "ReferenceDataEntry", "RetentionDecision", "SignalRouteChange",
     "SignalRouteKey", "SourceLocation", "ValidationCategory", "ValidationIssue",
     "ValidationReport", "ValidationSeverity", "WorkbookData", "WorkbookReadResult",
 ]

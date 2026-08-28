@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import replace
 
 from davinci_gw.arxml.document import ArxmlDocument
+from davinci_gw.arxml.index import ArxmlIndex
 from davinci_gw.domain.errors import ArxmlStructureError
 from davinci_gw.domain.models import (
+    MutationAction,
     MutationKind,
     MutationOperation,
     MutationPlan,
@@ -15,6 +18,7 @@ from davinci_gw.domain.models import (
 )
 from davinci_gw.modules.canif_editor import CanIfEditor
 from davinci_gw.modules.com_editor import ComEditor
+from davinci_gw.modules import definitions as defs
 from davinci_gw.modules.common import (
     MutationContext,
     build_container,
@@ -38,6 +42,14 @@ ORDER = {
     MutationKind.COM_SIGNAL_TIMEOUT: 100,
 }
 
+HANDLE_DEFINITIONS = frozenset({
+    defs.CANIF_RX_HANDLE, defs.CANIF_TX_HANDLE, defs.PDUR_SRC_HANDLE, defs.PDUR_DEST_HANDLE,
+})
+
+
+def _without_handles(operation: MutationOperation) -> tuple[tuple[str, str], ...]:
+    return tuple(item for item in operation.parameters if item[0] not in HANDLE_DEFINITIONS)
+
 
 def _problem(code: str, message: str) -> ValidationIssue:
     return ValidationIssue(code=code, message=message)
@@ -46,44 +58,57 @@ def _problem(code: str, message: str) -> ValidationIssue:
 class AddCoordinator:
     """持有一次解析树的四模块编辑器，确保先完整规划再进行任何修改。"""
 
-    def __init__(self, document: ArxmlDocument, workbook: WorkbookData) -> None:
+    def __init__(
+        self, document: ArxmlDocument, workbook: WorkbookData, index: ArxmlIndex | None = None,
+    ) -> None:
         self.document = document
         self.workbook = workbook
-        index = document.build_index()
-        self.ecuc = EcucEditor(document, index)
-        self.canif = CanIfEditor(document, index)
-        self.pdur = PduREditor(document, index)
-        self.com = ComEditor(document, index)
+        self.index = index or document.build_index()
+        self.template_cache = {}
+        self.ecuc = EcucEditor(document, self.index)
+        self.canif = CanIfEditor(document, self.index)
+        self.pdur = PduREditor(document, self.index)
+        self.com = ComEditor(document, self.index)
 
     def _deduplicate_operations(
         self, operations: tuple[MutationOperation, ...], issues: list[ValidationIssue],
     ) -> tuple[MutationOperation, ...]:
-        unique: dict[tuple[MutationKind, str], MutationOperation] = {}
+        unique: dict[tuple[MutationAction, MutationKind, str], MutationOperation] = {}
         for operation in operations:
-            key = (operation.kind, operation.object_path if operation.short_name else operation.parent_path)
+            key = (operation.action, operation.kind, operation.object_path)
             previous = unique.get(key)
             if previous is None:
                 unique[key] = operation
-            elif previous != operation:
+            elif (
+                previous.definition_ref == operation.definition_ref
+                and _without_handles(previous) == _without_handles(operation)
+                and previous.references == operation.references
+            ):
+                locations = tuple(dict.fromkeys(previous.source_locations + operation.source_locations))
+                unique[key] = replace(previous, source_locations=locations)
+            else:
                 issues.append(_problem(
                     "PLAN_PATH_CONFLICT",
-                    f"两个ADD计划试图以不同内容创建或修改“{key[1]}”。请检查重复名称、通道和路由参数。",
+                    f"两个ADD计划试图以不同内容创建或修改“{key[2]}”。请检查重复名称、通道和路由参数。",
                 ))
         return tuple(sorted(unique.values(), key=lambda item: (ORDER[item.kind], item.object_path)))
 
     def _preflight_operations(
         self, operations: tuple[MutationOperation, ...], issues: list[ValidationIssue],
     ) -> tuple[str, ...]:
-        index = self.document.build_index()
-        planned_paths = {operation.object_path for operation in operations if operation.short_name}
+        planned_paths = {operation.object_path for operation in operations
+                         if operation.action is MutationAction.CREATE}
         baseline_uuids = Counter(node.get("UUID") for node in self.document.root.iter() if node.get("UUID"))
         planned_uuids: set[str] = set()
         for operation in operations:
-            if operation.kind is MutationKind.COM_SIGNAL_TIMEOUT:
+            if operation.action is MutationAction.UPSERT_PARAMETERS:
                 self.com.ensure_timeout_templates(operation)
                 candidate_uuids = self.com.timeout_candidate_uuids(operation)
             else:
-                candidate = build_container(self.document.root, self.document.namespace, operation)
+                candidate = build_container(
+                    self.document.root, self.document.namespace, operation, index=self.index,
+                    template_cache=self.template_cache,
+                )
                 candidate_uuids = tuple(
                     node.get("UUID") for node in candidate.iter() if node.get("UUID")
                 )
@@ -94,12 +119,12 @@ class AddCoordinator:
                         f"计划对象“{operation.object_path}”生成的确定性UUID“{value}”已被占用。",
                     ))
                 planned_uuids.add(value)
-            if operation.kind is MutationKind.COM_SIGNAL_TIMEOUT:
+            if operation.action is MutationAction.UPSERT_PARAMETERS:
                 continue
             for _, target_path in operation.references:
                 if target_path in planned_paths:
                     continue
-                found = index.find_by_path(target_path)
+                found = self.index.find_by_path(target_path)
                 if len(found) != 1:
                     issues.append(_problem(
                         "PLANNED_REFERENCE_UNRESOLVED",
@@ -141,7 +166,8 @@ class AddCoordinator:
         if plan.errors:
             raise ArxmlStructureError("变更计划包含阻断错误，禁止修改ARXML树。")
         context = MutationContext(
-            self.document.root, self.document.namespace, self.document.build_index(),
+            self.document.root, self.document.namespace, self.index,
+            template_cache=self.template_cache,
         )
         try:
             for operation in plan.operations:
@@ -155,7 +181,6 @@ class AddCoordinator:
                     self.pdur.apply(context, operation)
                 else:
                     self.com.apply(context, operation)
-            self.document.build_index()
         except Exception:
             context.rollback()
             raise

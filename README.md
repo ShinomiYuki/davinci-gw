@@ -1,31 +1,27 @@
 # DaVinci 网关路由工具
 
-本工具读取标准化网关路由配置表和旧版本 DaVinci/MICROSAR 工程导出的完整 ARXML，生成包含本轮 ADD 路由的新版完整 ARXML。输入 Excel 和基准 ARXML 始终只读，未受影响的模块、节点、注释和属性会原样保留。
+本工具读取上游生成的标准网关路由配置表和旧版 DaVinci/MICROSAR 工程导出的完整 ARXML，一次处理直接报文与信号路由的 `ADD`/`DELETE`，生成新版完整 ARXML。配置表和基准 ARXML 始终只读。
 
-## 当前能力
+## 可以做什么
 
-- 校验配置表版本、工作表、表头、字段、重复和冲突。
+- 校验配置表版本、工作表、字段、重复和替换对。
 - 检查 ARXML 的 AUTOSAR Schema 以及 CanIf、Com、EcuC、PduR 四个必要模块。
-- 预览直接报文和信号路由的 ADD/DELETE 数量。
-- 新增 EcuC PDU、CanIf Rx/Tx PDU、PduR RoutingPath/SrcPdu/DestPdu。
-- 新增 ComGwMapping、ComGwSource 和一个或多个 ComGwDestination。
-- 将配置表中已经标准化的“超时时间”和“超时值”写到源 ComSignal；空值不写零。
-- 支持同一源报文或源信号的一对多路由、完整语义幂等检查和冲突阻止。
-- 原子写出并重新解析输出，复核新增对象、内部引用、UUID 和 Handle ID。
+- 新增或安全删除直接 CAN 报文路由和 Com 信号路由。
+- 支持同一源端的一对多，只删除指定目标腿。
+- 允许同一路由键各有一条 `DELETE` 和 `ADD`，以“先删后增”修改参数。
+- 保护共享 CanIf/EcuC/PduR/Com 对象、HRH、TxBuffer 和无法确认归属的人工配置。
+- 只在证据充分时清除源 ComSignal 超时；其他情况保守保留并说明原因。
+- 在内存工作副本上完成 `DELETE → 投影 → ADD`，通过输出复核后才原子写出。
 
-当前不支持 DELETE、诊断/CanTp 路由、DaVinci GUI 自动操作和图形界面。
+当前不支持直接报文 LIN 路由、诊断/CanTp 路由、多 ARXML 合并、DaVinci GUI 自动操作和图形界面。
 
-## 输入与输出
-
-需要准备：
+## 需要准备什么
 
 1. 上游流程生成的标准配置表，文件名为 `*_vX.x.xlsx`。
-2. 旧版本工程导出的完整 ARXML，且包含 CanIf、Com、EcuC、PduR。
+2. 旧版工程导出的完整 ARXML，且包含 CanIf、Com、EcuC、PduR。
 3. 一个与基准文件不同的输出路径。
 
-工具不会修改或覆盖输入文件。默认也不会覆盖已有输出；只有显式使用 `--overwrite` 才允许替换指定输出，但仍禁止把输出指向基准 ARXML。
-
-如果配置表含有任何 DELETE，`generate` 会停止。原因是当前版本只实现 ADD，忽略 DELETE 会生成一个看似成功、实际不完整的目标版本。`validate` 和 `preview` 仍可正常读取并显示这些 DELETE。
+工具不读取原始 Communication Routing Table，不解析 History，也不从自然语言推导需求。默认不覆盖已有输出；只有显式使用 `--overwrite` 才允许替换指定输出，但永远禁止把输出指向基准 ARXML。
 
 ## 安装
 
@@ -41,53 +37,45 @@ python -m pip install .
 python -m pip install -e ".[dev]"
 ```
 
-## 生成新版 ARXML
+## 校验、预览与生成
 
 ```powershell
+davinci-gw validate `
+  --config "input\网关路由配置表_v4.84.xlsx" `
+  --baseline "input\825E0GA.arxml"
+
+davinci-gw preview `
+  --config "input\网关路由配置表_v4.84.xlsx" `
+  --baseline "input\825E0GA.arxml"
+
 davinci-gw generate `
   --config "input\网关路由配置表_v4.84.xlsx" `
   --baseline "input\825E0GA.arxml" `
   --output "output\825E0GA_v4.84.arxml"
 ```
 
-成功输出类似：
+`validate` 只检查输入契约和 ARXML 基础结构。`preview` 在可丢弃工作树上完整规划 DELETE 和 ADD，显示新增、删除、已存在、已不存在、共享保留、超时清理和冲突，但不写文件。`generate` 执行同一份事务规划并生成输出。
 
-```text
-目标版本：4.84
-
-直接报文路由：
-  新增：9
-  已存在并跳过：0
-  缺失或不支持并跳过：0
-
-信号路由：
-  新增：0
-  已存在并跳过：0
-  缺失或不支持并跳过：2
-
-输出文件：...\825E0GA_v4.84.arxml
-输出验证：通过
-```
-
-缺少单条路由依赖的 DBC 对象时，工具会显示带工作表行号和对象名称的警告，跳过该路由并继续处理其他有效 ADD。请务必阅读“缺失或不支持并跳过”计数；成功写出不代表所有输入行都已生成。
-
-## 校验与预览
-
-```powershell
-davinci-gw validate --config "input\网关路由配置表_v4.84.xlsx" --baseline "input\825E0GA.arxml"
-
-davinci-gw preview --config "input\网关路由配置表_v4.84.xlsx" --baseline "input\825E0GA.arxml"
-```
+成功报告会显示每类路由的实际新增/删除/跳过数、共享对象或超时的保留原因、输出路径和输出验证结果。
 
 退出码：成功为 `0`；契约、业务或配置冲突为 `2`；文件损坏、I/O 或系统错误为 `3`。普通模式不显示 Python 堆栈；需要诊断时可在子命令前加 `--debug`。
 
-## 常见问题
+## 如何理解结果
 
-- 找不到 HRH：检查“引用数据”的 `CanIfHrh名称`，并先在 DaVinci 中导入或配置对应源 CAN 通道对象。该路由会被明确警告并跳过。
-- 找不到 TxBuffer：检查 `CanIfTxBuffer名称` 是否与基准 ARXML 一致。只有受影响的目标腿会跳过。
-- 找不到 ComSignal/ComIPdu：通常表示目标版本 DBC 尚未导入，或报文、信号、网段名称不匹配。先在 DaVinci 中补齐 DBC 配置后重试；其他可解析路由仍会继续。
-- 已有同名对象但参数或引用不同：这是阻断冲突。请根据提示核对 CAN ID、Length/DLC、类型、HRH/TxBuffer、PduR 或 Com 引用，修复基准或配置表后再生成。
-- 配置表包含 DELETE：当前版本拒绝正式生成，避免遗漏删除。可先用 `preview` 查看数量，等待 DELETE 功能实现或提供不含 DELETE 的正式输入。
-- 输出文件已存在：更换路径，或确认目标正确后显式增加 `--overwrite`。
+- “已存在”：ADD 目标的完整语义与现有对象一致，幂等跳过。
+- “已不存在”：DELETE 目标腿在基准中已经没有，视为幂等成功，不是致命错误。
+- “保留共享对象”：目标仍被其他路由引用，或内含人工子容器；工具只删除能唯一确认的路由腿。
+- “保留超时”：源信号仍有其他目标/Mapping/ADD 使用，或 DELETE 超时证据不足。这是正常的安全决策。
+- “缺失或不支持并跳过”：单条 ADD 缺少 DBC、HRH 或 TxBuffer 等依赖；其他可解析 ADD 仍可继续。
+- “候选不唯一”或“语义冲突”：工具无法证明对象归属，会阻止整份输出。请按错误中的工作表、行号和 ARXML 路径在 DaVinci 中清理重复或修复引用。
 
-完整字段规则见 [输入契约](docs/输入契约.md)，实现与验证记录见 [第02轮开发日志](docs/第02轮开发日志.md)。
+LIN 信号端点不使用 `PSMM ↔ LIN04` 之类的固定项目映射。当配置表的逻辑网段不出现在 ComIPdu 名称中时，工具只根据报文名、信号名、方向和 `ComIPduSignalRef` 关系接受全局唯一的 LIN 结构候选；若 CAN/LIN 或多个 LIN 中有同名候选，则阻止输出。
+
+## 安全保证
+
+- DELETE 会核对报文/信号完整身份、方向、CAN ID、通道和引用关系，不只凭 SHORT-NAME 删除。
+- HRH、TxBuffer、CanIf 控制器、硬件对象和 PduR BSW 模块配置永不在删除计划中。
+- 任一规划、应用、序列化或临时输出验证失败，整个工作副本丢弃，不修改基准，不留目标或临时半成品。
+- 输出会重新解析，复核四模块、新增/删除/保留语义、参数删除、内部引用、UUID 和 Handle ID。
+
+完整字段规则见 [输入契约](docs/输入契约.md)，技术设计和验证记录见 [第03轮开发日志](docs/第03轮开发日志.md)。

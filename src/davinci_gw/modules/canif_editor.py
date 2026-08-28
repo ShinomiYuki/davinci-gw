@@ -21,10 +21,14 @@ class CanIfEditor:
     def __init__(self, document: ArxmlDocument, index: ArxmlIndex | None = None) -> None:
         self.document = document
         self.index = index or document.build_index()
-        self.rx_parent_path = unique_template_parent_path(document.root, document.namespace, defs.CANIF_RX)
-        self.tx_parent_path = unique_template_parent_path(document.root, document.namespace, defs.CANIF_TX)
-        self.rx_handles = HandleAllocator(document.root, document.namespace, defs.CANIF_RX_HANDLE)
-        self.tx_handles = HandleAllocator(document.root, document.namespace, defs.CANIF_TX_HANDLE)
+        self.rx_parent_path = unique_template_parent_path(
+            document.root, document.namespace, defs.CANIF_RX, index=self.index,
+        )
+        self.tx_parent_path = unique_template_parent_path(
+            document.root, document.namespace, defs.CANIF_TX, index=self.index,
+        )
+        self.rx_handles = HandleAllocator(self.index, document.namespace, defs.CANIF_RX_HANDLE)
+        self.tx_handles = HandleAllocator(self.index, document.namespace, defs.CANIF_TX_HANDLE)
 
     def rx_operation(
         self, route: DirectRouteChange, short_name: str, ecuc_path: str, hrh_path: str,

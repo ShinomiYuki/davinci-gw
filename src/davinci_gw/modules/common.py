@@ -14,6 +14,7 @@ from davinci_gw.domain.errors import ArxmlStructureError
 from davinci_gw.domain.models import MutationKind, MutationOperation
 
 UUID_NAMESPACE = UUID("9b41f4ce-62d8-5d2f-9127-897299f06d54")
+TemplateKey = tuple[MutationKind, str, tuple[str, ...], tuple[str, ...]]
 
 
 def definition_ref(node: etree._Element, namespace: str) -> str | None:
@@ -78,23 +79,26 @@ def operation_matches(
 
 
 def find_templates(
-    root: etree._Element, namespace: str, definition: str,
+    root: etree._Element, namespace: str, definition: str, *, index: ArxmlIndex | None = None,
 ) -> tuple[etree._Element, ...]:
     """按定义引用查找真实同类型 ECUC 容器模板。"""
     tag = qualified(namespace, "ECUC-CONTAINER-VALUE")
+    if index is not None:
+        return tuple(node for node in index.find_by_definition_ref(definition) if node.tag == tag)
     return tuple(node for node in root.iter(tag) if definition_ref(node, namespace) == definition)
 
 
 def unique_template_parent_path(
-    root: etree._Element, namespace: str, definition: str,
+    root: etree._Element, namespace: str, definition: str, *, index: ArxmlIndex | None = None,
 ) -> str:
     """从真实同类型兄弟推导唯一父容器路径。"""
-    paths: set[str] = set()
-    for node in find_templates(root, namespace, definition):
+    parents: set[etree._Element] = set()
+    for node in find_templates(root, namespace, definition, index=index):
         group = node.getparent()
         parent = group.getparent() if group is not None else None
         if parent is not None:
-            paths.add(autosar_path(parent, namespace))
+            parents.add(parent)
+    paths = {autosar_path(parent, namespace) for parent in parents}
     if len(paths) != 1:
         raise ArxmlStructureError(
             f"定义“{definition}”的父容器应唯一，实际找到{len(paths)}个候选：{sorted(paths)}。"
@@ -142,13 +146,22 @@ def select_template(
     root: etree._Element,
     namespace: str,
     operation: MutationOperation,
+    *,
+    index: ArxmlIndex | None = None,
+    template_cache: dict[TemplateKey, etree._Element] | None = None,
 ) -> etree._Element:
     """选择包含计划所需定义的最小真实模板，找不到时拒绝猜测节点结构。"""
-    candidates: list[tuple[int, etree._Element]] = []
     recursive = operation.kind in {MutationKind.COM_GW_SOURCE, MutationKind.COM_GW_DESTINATION}
     required_params = {key for key, _ in operation.parameters}
     required_refs = {key for key, _ in operation.references}
-    for node in find_templates(root, namespace, operation.definition_ref):
+    cache_key = (
+        operation.kind, operation.definition_ref,
+        tuple(sorted(required_params)), tuple(sorted(required_refs)),
+    )
+    if template_cache is not None and cache_key in template_cache:
+        return template_cache[cache_key]
+    candidates: list[tuple[int, etree._Element]] = []
+    for node in find_templates(root, namespace, operation.definition_ref, index=index):
         parameters, references = semantic_values(node, namespace, recursive=recursive)
         if required_params <= parameters.keys() and required_refs <= references.keys():
             candidates.append((len(parameters) + len(references), node))
@@ -158,7 +171,10 @@ def select_template(
             "请先在DaVinci工程中保留一个同类型配置后重试。"
         )
     candidates.sort(key=lambda item: (item[0], autosar_path(item[1], namespace)))
-    return candidates[0][1]
+    selected = candidates[0][1]
+    if template_cache is not None:
+        template_cache[cache_key] = selected
+    return selected
 
 
 def _filter_value_entries(
@@ -212,10 +228,14 @@ def regenerate_uuids(node: etree._Element, object_path: str) -> None:
 
 
 def build_container(
-    root: etree._Element, namespace: str, operation: MutationOperation,
+    root: etree._Element, namespace: str, operation: MutationOperation, *,
+    index: ArxmlIndex | None = None,
+    template_cache: dict[TemplateKey, etree._Element] | None = None,
 ) -> etree._Element:
     """从真实模板深复制并只保留计划需要的内容，随后重建全部 UUID。"""
-    template = select_template(root, namespace, operation)
+    template = select_template(
+        root, namespace, operation, index=index, template_cache=template_cache,
+    )
     node = deepcopy(template)
     short_name = node.find(qualified(namespace, "SHORT-NAME"))
     if short_name is None:
@@ -255,11 +275,9 @@ def insert_deterministically(
 class HandleAllocator:
     """在单个参数定义作用域中按最小未占用非负整数稳定分配 Handle ID。"""
 
-    def __init__(self, root: etree._Element, namespace: str, parameter_definition: str) -> None:
+    def __init__(self, index: ArxmlIndex, namespace: str, parameter_definition: str) -> None:
         values: list[int] = []
-        for node in root.iter():
-            if definition_ref(node, namespace) != parameter_definition:
-                continue
+        for node in index.find_by_definition_ref(parameter_definition):
             value = _value_text(node)
             try:
                 values.append(int(value or ""))
@@ -307,6 +325,7 @@ class MutationContext:
     root: etree._Element
     namespace: str
     index: ArxmlIndex
+    template_cache: dict[TemplateKey, etree._Element] = field(default_factory=dict)
     created: dict[str, etree._Element] = field(default_factory=dict)
     inserted: list[etree._Element] = field(default_factory=list)
 
@@ -325,7 +344,10 @@ class MutationContext:
         parent = parent_node.find(qualified(self.namespace, "SUB-CONTAINERS"))
         if parent is None:
             raise ArxmlStructureError(f"父对象“{operation.parent_path}”缺少SUB-CONTAINERS。")
-        node = build_container(self.root, self.namespace, operation)
+        node = build_container(
+            self.root, self.namespace, operation, index=self.index,
+            template_cache=self.template_cache,
+        )
         insert_deterministically(parent, node, self.namespace)
         self.created[operation.object_path] = node
         self.inserted.append(node)

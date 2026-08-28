@@ -6,7 +6,7 @@ from collections import Counter
 
 from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.domain.errors import OutputValidationError
-from davinci_gw.domain.models import MutationKind, MutationPlan
+from davinci_gw.domain.models import MutationAction, MutationKind, MutationPlan
 from davinci_gw.modules import definitions as defs
 from davinci_gw.modules.common import definition_ref, operation_matches, semantic_values
 
@@ -20,8 +20,32 @@ def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> No
     document.inspect()
     index = document.build_index()
     failures: list[str] = []
+    recreated_paths = {
+        operation.object_path for operation in plan.operations
+        if operation.action is MutationAction.CREATE
+    }
     for operation in plan.operations:
-        if operation.kind is MutationKind.COM_SIGNAL_TIMEOUT:
+        if operation.action is MutationAction.REMOVE:
+            # DELETE＋ADD 替换对允许同一路径在投影上被重新创建；CREATE 语义在后续分支验证。
+            if operation.object_path in recreated_paths:
+                continue
+            found = index.find_by_path(operation.object_path)
+            if found:
+                failures.append(f"计划删除对象“{operation.object_path}”仍存在{len(found)}个")
+            if index.find_referrers(operation.object_path):
+                failures.append(f"计划删除对象“{operation.object_path}”仍被输出中的对象引用")
+            continue
+        if operation.action is MutationAction.REMOVE_PARAMETERS:
+            found = index.find_by_path(operation.object_path)
+            if len(found) != 1:
+                failures.append(f"参数删除对象“{operation.object_path}”实际找到{len(found)}个")
+                continue
+            actual, _ = semantic_values(found[0], document.namespace)
+            for definition, _ in operation.parameters:
+                if definition in actual:
+                    failures.append(f"计划删除参数“{definition}”仍存在于“{operation.object_path}”")
+            continue
+        if operation.action is MutationAction.UPSERT_PARAMETERS:
             found = index.find_by_path(operation.parent_path)
             if len(found) != 1:
                 failures.append(f"源超时对象“{operation.parent_path}”实际找到{len(found)}个")
@@ -30,6 +54,19 @@ def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> No
             for definition, value in operation.parameters:
                 if actual.get(definition) != (value,):
                     failures.append(f"源超时参数“{definition}”未按计划写入“{value}”")
+            continue
+        if operation.action is MutationAction.RETAIN:
+            found = index.find_by_path(operation.object_path)
+            if len(found) != 1:
+                failures.append(f"计划保留对象“{operation.object_path}”实际找到{len(found)}个")
+            elif operation.parameters or operation.references:
+                recursive = operation.kind in {
+                    MutationKind.COM_GW_SOURCE, MutationKind.COM_GW_DESTINATION,
+                }
+                if not operation_matches(
+                    found[0], operation, document.namespace, recursive=recursive,
+                ):
+                    failures.append(f"计划保留对象“{operation.object_path}”语义发生变化")
             continue
         found = index.find_by_path(operation.object_path)
         recursive = operation.kind in {MutationKind.COM_GW_SOURCE, MutationKind.COM_GW_DESTINATION}
@@ -41,6 +78,12 @@ def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> No
             if len(index.find_by_path(target)) != 1:
                 failures.append(f"对象“{operation.object_path}”的内部引用“{target}”无法唯一解析")
 
+    for decision in plan.decisions:
+        if len(index.find_by_path(decision.object_path)) != 1:
+            failures.append(
+                f"计划保留对象“{decision.object_path}”未在输出中唯一保留：{decision.reason}"
+            )
+
     output_uuids = Counter(
         node.get("UUID") for node in document.root.iter() if node.get("UUID")
     )
@@ -51,6 +94,8 @@ def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> No
             )
     planned_handles: Counter[tuple[str, str]] = Counter()
     for operation in plan.operations:
+        if operation.action is not MutationAction.CREATE:
+            continue
         for definition, value in operation.parameters:
             if definition in HANDLE_DEFINITIONS:
                 planned_handles[(definition, value)] += 1

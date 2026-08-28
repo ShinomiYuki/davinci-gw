@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 
 from davinci_gw.application.generate import generate_inputs
 from davinci_gw.application.preview import preview_inputs
-from davinci_gw.application.validate import inspect_baseline, write_roundtrip_copy
+from davinci_gw.application.validate import inspect_baseline
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -51,8 +51,9 @@ def make_add_only_copy(source: Path, target: Path) -> Path:
 
 @pytest.mark.slow
 @pytest.mark.skipif(not CONFIG.exists() or not BASELINE.exists(), reason="本地真实输入不存在")
-def test_real_inputs_and_roundtrip(tmp_path: Path) -> None:
-    before = fingerprint(BASELINE)
+def test_real_inputs_preview_and_full_transaction_generation(tmp_path: Path) -> None:
+    baseline_before = fingerprint(BASELINE)
+    config_before = fingerprint(CONFIG)
     preview = preview_inputs(CONFIG, BASELINE)
     assert preview.is_valid, [issue.message for issue in preview.validation.issues]
     assert preview.target_version == "4.84"
@@ -67,10 +68,18 @@ def test_real_inputs_and_roundtrip(tmp_path: Path) -> None:
         "CanIf": "/MICROSAR/CanIf", "Com": "/MICROSAR/Com",
         "EcuC": "/MICROSAR/EcuC", "PduR": "/MICROSAR/PduR",
     }
-    output = tmp_path / "roundtrip.arxml"
-    write_roundtrip_copy(BASELINE, output)
+    output = tmp_path / "real_full_transaction.arxml"
+    report = generate_inputs(CONFIG, BASELINE, output)
+    assert report.is_success, [issue.message for issue in report.all_issues]
+    assert report.plan.direct_added_count + report.plan.direct_existing_count + \
+        report.plan.direct_skipped_count == 9
+    assert report.plan.direct_deleted_count + report.plan.direct_missing_count == 1
+    assert report.plan.signal_added_count + report.plan.signal_existing_count + \
+        report.plan.signal_skipped_count == 2
+    assert report.plan.signal_deleted_count + report.plan.signal_missing_count == 2
     assert inspect_baseline(output).schema_filename == "AUTOSAR_00049.xsd"
-    assert fingerprint(BASELINE) == before
+    assert fingerprint(BASELINE) == baseline_before
+    assert fingerprint(CONFIG) == config_before
 
 
 @pytest.mark.slow

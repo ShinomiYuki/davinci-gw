@@ -238,7 +238,7 @@ def _read_direct(
     sheet: Worksheet, mapping: dict[str, int], path: Path, issues: list[ValidationIssue],
 ) -> list[DirectRouteChange]:
     changes: list[DirectRouteChange] = []
-    seen: dict[DirectRouteKey, tuple[OperationType, int]] = {}
+    seen: dict[DirectRouteKey, dict[OperationType, int]] = {}
     for number, row in _rows(sheet, DIRECT_HEADERS, mapping):
         operation = _operation(row.get("操作类型"), path, sheet.title, number, issues)
         required = DIRECT_ADD_REQUIRED_FIELDS if operation is OperationType.ADD else DIRECT_IDENTITY_FIELDS
@@ -265,16 +265,16 @@ def _read_direct(
             continue
         source_name, source_channel, target_name, target_channel = identity
         key = DirectRouteKey(source_name, source_id, source_channel, target_name, target_id, target_channel)
-        previous = seen.get(key)
-        if previous:
-            relation = "重复" if previous[0] is operation else "存在ADD和DELETE冲突"
+        previous = seen.setdefault(key, {})
+        if operation in previous:
             issues.append(_issue(
                 path, sheet.title, number, "操作类型", operation.value,
-                f"与第{previous[1]}行的同一路由{relation}，请保留唯一且不冲突的操作。",
-                "DIRECT_ROUTE_DUPLICATE" if previous[0] is operation else "DIRECT_ROUTE_CONFLICT",
+                f"与第{previous[operation]}行的同一路由操作重复；同一操作只能保留一条。",
+                "DIRECT_ROUTE_DUPLICATE",
             ))
         else:
-            seen[key] = (operation, number)
+            # 同一身份允许一条 DELETE 与一条 ADD 组成替换对；执行阶段固定先删后增。
+            previous[operation] = number
         changes.append(DirectRouteChange(
             operation, key, source_length, _text(row, "源网段报文类型"),
             _text(row, "源网段RxIndicationUL"), _text(row, "源网段报文Checksum使能"),
@@ -290,7 +290,7 @@ def _read_signals(
     sheet: Worksheet, mapping: dict[str, int], path: Path, issues: list[ValidationIssue],
 ) -> list[SignalRouteChange]:
     changes: list[SignalRouteChange] = []
-    seen: dict[SignalRouteKey, tuple[OperationType, int]] = {}
+    seen: dict[SignalRouteKey, dict[OperationType, int]] = {}
     for number, row in _rows(sheet, SIGNAL_HEADERS, mapping):
         operation = _operation(row.get("操作类型"), path, sheet.title, number, issues)
         required_ok = _required(row, SIGNAL_IDENTITY_FIELDS, path, sheet.title, number, issues)
@@ -300,16 +300,15 @@ def _read_signals(
         if operation is None or not required_ok or any(value is None for value in identity):
             continue
         key = SignalRouteKey(*identity)
-        previous = seen.get(key)
-        if previous:
-            relation = "重复" if previous[0] is operation else "存在ADD和DELETE冲突"
+        previous = seen.setdefault(key, {})
+        if operation in previous:
             issues.append(_issue(
                 path, sheet.title, number, "操作类型", operation.value,
-                f"与第{previous[1]}行的同一路由{relation}，请保留唯一且不冲突的操作。",
-                "SIGNAL_ROUTE_DUPLICATE" if previous[0] is operation else "SIGNAL_ROUTE_CONFLICT",
+                f"与第{previous[operation]}行的同一路由操作重复；同一操作只能保留一条。",
+                "SIGNAL_ROUTE_DUPLICATE",
             ))
         else:
-            seen[key] = (operation, number)
+            previous[operation] = number
         changes.append(SignalRouteChange(
             operation, key, _text(row, "字节序"), timeout_value, timeout_time,
             _text(row, "源信号组合名"), SourceLocation(sheet.title, number),

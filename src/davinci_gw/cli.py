@@ -1,4 +1,4 @@
-"""中文命令行入口，提供 validate、preview 和第02轮 ADD generate。"""
+"""中文命令行入口，提供 validate、事务 preview 和第03轮 generate。"""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def _parser() -> argparse.ArgumentParser:
         child = subparsers.add_parser(command, help=help_text)
         child.add_argument("--config", type=Path, required=True, help="标准配置表路径")
         child.add_argument("--baseline", type=Path, required=True, help="旧版完整 ARXML 路径")
-    generate = subparsers.add_parser("generate", help="应用ADD并原子写出新版完整ARXML")
+    generate = subparsers.add_parser("generate", help="应用DELETE与ADD事务并原子写出新版完整ARXML")
     generate.add_argument("--config", type=Path, required=True, help="标准配置表路径")
     generate.add_argument("--baseline", type=Path, required=True, help="旧版完整ARXML路径")
     generate.add_argument("--output", type=Path, required=True, help="新版完整ARXML输出路径")
@@ -77,33 +77,47 @@ def _render_validate(report: ValidationReport) -> None:
         if report.arxml_inspection:
             print(f"AUTOSAR Schema：{report.arxml_inspection.schema_filename}")
             print("必要模块：CanIf、Com、EcuC、PduR 均已找到。")
-        print("当前开发轮次尚未执行路由写入。")
+        print("validate 仅校验输入，不执行路由写入。")
     print(f"摘要：错误 {len(report.errors)}，警告 {len(report.warnings)}。")
 
 
 def _render_preview(preview: PreviewReport) -> None:
-    """渲染固定结构的预览，同时明确本轮不会写路由。"""
+    """渲染投影规划的新增、删除、幂等、保留、跳过和冲突状态。"""
     if not preview.is_valid:
         _render_issues(preview.validation)
         print(f"摘要：错误 {len(preview.validation.errors)}，警告 {len(preview.validation.warnings)}。")
         return
     inspection = preview.validation.arxml_inspection
+    plan = preview.plan
     print(f"目标版本：{preview.target_version}\n")
     print("直接报文路由：")
-    print(f"  新增：{preview.direct_add_count}")
-    print(f"  删除：{preview.direct_delete_count}\n")
+    print(f"  新增：{plan.direct_added_count if plan else preview.direct_add_count}")
+    print(f"  删除：{plan.direct_deleted_count if plan else preview.direct_delete_count}")
+    print(f"  已存在：{plan.direct_existing_count if plan else 0}")
+    print(f"  已不存在：{plan.direct_missing_count if plan else 0}")
+    print(f"  保留共享对象：{plan.direct_retained_count if plan else 0}")
+    print(f"  跳过：{plan.direct_skipped_count if plan else 0}")
+    print(f"  冲突：{plan.direct_conflict_count if plan else 0}\n")
     print("信号路由：")
-    print(f"  新增：{preview.signal_add_count}")
-    print(f"  删除：{preview.signal_delete_count}\n")
+    print(f"  新增：{plan.signal_added_count if plan else preview.signal_add_count}")
+    print(f"  删除：{plan.signal_deleted_count if plan else preview.signal_delete_count}")
+    print(f"  已存在：{plan.signal_existing_count if plan else 0}")
+    print(f"  已不存在：{plan.signal_missing_count if plan else 0}")
+    print(f"  保留超时：{plan.signal_timeout_retained_count if plan else 0}")
+    print(f"  清除超时：{plan.signal_timeout_removed_count if plan else 0}")
+    print(f"  跳过：{plan.signal_skipped_count if plan else 0}")
+    print(f"  冲突：{plan.signal_conflict_count if plan else 0}\n")
     print("引用数据：")
     print(f"  CAN通道：{preview.reference_count}\n")
     print("基准ARXML：")
     print(f"  AUTOSAR Schema：{inspection.schema_filename if inspection else '未识别'}")
     for name in ("CanIf", "Com", "EcuC", "PduR"):
         print(f"  {name}：{'已找到' if inspection and name in inspection.modules else '未找到'}")
-    print("\n本轮状态：")
-    print("  输入契约和ARXML基础检查已通过。")
-    print("  当前开发轮次尚未执行路由写入。")
+    print("\n预览状态：完整 DELETE 投影与 ADD 规划已通过；未写入任何文件。")
+    if plan and plan.decisions:
+        print("\n保留决策：")
+        for decision in plan.decisions:
+            print(f"  - {decision.object_path}：{decision.reason}")
 
 
 def _render_generation(report: GenerationReport) -> None:
@@ -120,12 +134,25 @@ def _render_generation(report: GenerationReport) -> None:
     print(f"目标版本：{data.target_version if data else '未识别'}\n")
     print("直接报文路由：")
     print(f"  新增：{plan.direct_added_count}")
+    print(f"  删除：{plan.direct_deleted_count}")
     print(f"  已存在并跳过：{plan.direct_existing_count}")
+    print(f"  已不存在并跳过：{plan.direct_missing_count}")
+    print(f"  保留共享对象：{plan.direct_retained_count}")
     print(f"  缺失或不支持并跳过：{plan.direct_skipped_count}\n")
     print("信号路由：")
     print(f"  新增：{plan.signal_added_count}")
+    print(f"  删除：{plan.signal_deleted_count}")
     print(f"  已存在并跳过：{plan.signal_existing_count}")
+    print(f"  已不存在并跳过：{plan.signal_missing_count}")
+    print(f"  保留共享对象：{plan.signal_retained_count}")
+    print(f"  保留超时：{plan.signal_timeout_retained_count}")
+    print(f"  清除超时：{plan.signal_timeout_removed_count}")
     print(f"  缺失或不支持并跳过：{plan.signal_skipped_count}\n")
+    if plan.decisions:
+        print("保留决策：")
+        for decision in plan.decisions:
+            print(f"  - {decision.object_path}：{decision.reason}")
+        print()
     print(f"输出文件：{report.output_path}")
     print("输出验证：通过")
 

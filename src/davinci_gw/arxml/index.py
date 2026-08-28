@@ -40,13 +40,15 @@ class ArxmlIndex:
         definitions: defaultdict[str, list[etree._Element]] = defaultdict(list)
         paths: defaultdict[str, list[etree._Element]] = defaultdict(list)
         referrers: defaultdict[str, list[etree._Element]] = defaultdict(list)
+        named_paths: dict[etree._Element, str] = {}
         for element in self.root.iter():
             if not isinstance(element.tag, str):
                 continue
-            short_name = direct_child_text(element, self.namespace, "SHORT-NAME")
-            if short_name:
-                short_names[short_name].append(element)
-                paths[autosar_path(element, self.namespace)].append(element)
+            short_name: str | None = None
+            definition: str | None = None
+            value_ref: str | None = None
+            # 一次直接子节点遍历同时提取索引字段，避免对 81MB 树上的每个节点
+            # 先 find(SHORT-NAME) 再重复遍历子节点。
             for child in element:
                 if not isinstance(child.tag, str) or child.text is None:
                     continue
@@ -54,10 +56,30 @@ class ArxmlIndex:
                 if not text:
                     continue
                 name = local_name(child)
-                if name == "DEFINITION-REF":
-                    definitions[text].append(element)
+                if name == "SHORT-NAME":
+                    short_name = text
+                elif name == "DEFINITION-REF":
+                    definition = text
                 elif name == "VALUE-REF":
-                    referrers[text].append(element)
+                    value_ref = text
+            if short_name:
+                short_names[short_name].append(element)
+                # root.iter() 保证祖先先于后代出现；从最近的已命名祖先继承路径，
+                # 避免每个对象都重新一路扫描到 AUTOSAR 根节点。
+                parent = element.getparent()
+                parent_path: str | None = None
+                while parent is not None:
+                    parent_path = named_paths.get(parent)
+                    if parent_path is not None:
+                        break
+                    parent = parent.getparent()
+                path = f"{parent_path}/{short_name}" if parent_path else f"/{short_name}"
+                named_paths[element] = path
+                paths[path].append(element)
+            if definition is not None:
+                definitions[definition].append(element)
+            if value_ref is not None:
+                referrers[value_ref].append(element)
         self._by_short_name = dict(short_names)
         self._by_definition_ref = dict(definitions)
         self._by_path = dict(paths)

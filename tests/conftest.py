@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from copy import copy
+from copy import copy, deepcopy
 from pathlib import Path
 
 import pytest
@@ -11,6 +11,7 @@ from lxml import etree
 from openpyxl import Workbook
 
 from davinci_gw.modules import definitions as defs
+from davinci_gw.application.generate import generate_inputs
 
 
 DIRECT_HEADERS = (
@@ -306,4 +307,85 @@ def arxml_factory(tmp_path: Path) -> Callable[..., Path]:
         path = tmp_path / filename
         etree.ElementTree(root).write(path, encoding="UTF-8", xml_declaration=True, pretty_print=True)
         return path
+    return create
+
+
+@pytest.fixture
+def lin_target_arxml_factory(
+    tmp_path: Path, arxml_factory: Callable[..., Path],
+) -> Callable[..., Path]:
+    """生成逻辑 LIN 节点名与物理通道名无固定映射的目标端 DBC 基线。"""
+    counter = 0
+
+    def create(*, channels: Sequence[str] = ("LIN04",)) -> Path:
+        nonlocal counter
+        counter += 1
+        path = arxml_factory(filename=f"lin_target_{counter}.arxml")
+        tree = etree.parse(str(path))
+        namespace = etree.QName(tree.getroot()).namespace
+
+        def named(short_name: str) -> etree._Element:
+            return next(
+                node for node in tree.getroot().iter()
+                if node.findtext(f"{{{namespace}}}SHORT-NAME") == short_name
+            )
+
+        original_ipdu = named("DST_MSG_oDST_Tx")
+        original_signals = (named("DST_SIG_oDST_MSG_oDST_Tx"),
+                            named("DST_SIG_2_oDST_MSG_oDST_Tx"))
+        parent = original_ipdu.getparent()
+        assert parent is not None and all(signal.getparent() is parent for signal in original_signals)
+        parent.remove(original_ipdu)
+        for signal in original_signals:
+            parent.remove(signal)
+
+        for channel in channels:
+            renamed_paths: dict[str, str] = {}
+            clones = [deepcopy(signal) for signal in original_signals]
+            for clone, signal_name in zip(clones, ("DST_SIG", "DST_SIG_2"), strict=True):
+                old_path = f"/Cfg/Com/ComConfig/{signal_name}_oDST_MSG_oDST_Tx"
+                new_name = f"{signal_name}_oDST_MSG_o{channel}_Tx"
+                clone.find(f"{{{namespace}}}SHORT-NAME").text = new_name
+                renamed_paths[old_path] = f"/Cfg/Com/ComConfig/{new_name}"
+                parent.append(clone)
+            ipdu = deepcopy(original_ipdu)
+            ipdu.find(f"{{{namespace}}}SHORT-NAME").text = f"DST_MSG_o{channel}_Tx"
+            for value_ref in ipdu.iter(f"{{{namespace}}}VALUE-REF"):
+                if value_ref.text in renamed_paths:
+                    value_ref.text = renamed_paths[value_ref.text]
+            parent.append(ipdu)
+
+        tree.write(str(path), encoding="UTF-8", xml_declaration=True, pretty_print=True)
+        return path
+
+    return create
+
+
+@pytest.fixture
+def generated_arxml_factory(
+    tmp_path: Path, workbook_factory: Callable[..., Path], arxml_factory: Callable[..., Path],
+) -> Callable[..., Path]:
+    """先用第02轮 ADD 生成结构完整的删除测试基线，避免手写被测路由 XML。"""
+    counter = 0
+
+    def create(
+        *,
+        direct_rows: Iterable[Mapping[str, object]] = (),
+        signal_rows: Iterable[Mapping[str, object]] = (),
+        reference_rows: Iterable[Mapping[str, object]] | None = None,
+    ) -> Path:
+        nonlocal counter
+        counter += 1
+        config = workbook_factory(
+            filename=f"delete_baseline_{counter}_v4.84.xlsx",
+            direct_rows=direct_rows,
+            signal_rows=signal_rows,
+            reference_rows=reference_rows,
+        )
+        baseline = arxml_factory(filename=f"delete_source_{counter}.arxml")
+        output = tmp_path / f"delete_generated_{counter}.arxml"
+        report = generate_inputs(config, baseline, output)
+        assert report.is_success, [issue.message for issue in report.all_issues]
+        return output
+
     return create

@@ -19,10 +19,13 @@ from .common import (
 
 
 def _single_template_reference(
-    document: ArxmlDocument, definition: str, reference: str, *, suffix: str | None = None,
+    document: ArxmlDocument, index: ArxmlIndex, definition: str, reference: str, *,
+    suffix: str | None = None,
 ) -> str:
     values: set[str] = set()
-    for node in find_templates(document.root, document.namespace, definition):
+    for node in find_templates(
+        document.root, document.namespace, definition, index=index,
+    ):
         _, refs = semantic_values(node, document.namespace)
         candidates = refs.get(reference, ())
         if suffix is not None:
@@ -41,16 +44,20 @@ class PduREditor:
     def __init__(self, document: ArxmlDocument, index: ArxmlIndex | None = None) -> None:
         self.document = document
         self.index = index or document.build_index()
-        self.path_parent = unique_template_parent_path(document.root, document.namespace, defs.PDUR_PATH)
-        self.lock_ref = _single_template_reference(document, defs.PDUR_PATH, defs.PDUR_PATH_LOCK_REF)
+        self.path_parent = unique_template_parent_path(
+            document.root, document.namespace, defs.PDUR_PATH, index=self.index,
+        )
+        self.lock_ref = _single_template_reference(
+            document, self.index, defs.PDUR_PATH, defs.PDUR_PATH_LOCK_REF,
+        )
         self.src_module_ref = _single_template_reference(
-            document, defs.PDUR_SRC, defs.PDUR_SRC_MODULE_REF, suffix="/CanIf",
+            document, self.index, defs.PDUR_SRC, defs.PDUR_SRC_MODULE_REF, suffix="/CanIf",
         )
         self.dest_module_ref = _single_template_reference(
-            document, defs.PDUR_DEST, defs.PDUR_DEST_MODULE_REF, suffix="/CanIf",
+            document, self.index, defs.PDUR_DEST, defs.PDUR_DEST_MODULE_REF, suffix="/CanIf",
         )
-        self.src_handles = HandleAllocator(document.root, document.namespace, defs.PDUR_SRC_HANDLE)
-        self.dest_handles = HandleAllocator(document.root, document.namespace, defs.PDUR_DEST_HANDLE)
+        self.src_handles = HandleAllocator(self.index, document.namespace, defs.PDUR_SRC_HANDLE)
+        self.dest_handles = HandleAllocator(self.index, document.namespace, defs.PDUR_DEST_HANDLE)
 
     def path_operation(
         self, short_name: str, locations: tuple[SourceLocation, ...],

@@ -70,32 +70,37 @@ class SignalRoutePlanner:
         signal = key.source_signal_name if source else key.target_signal_name
         role = "源" if source else "目标"
         direction = "RECEIVE" if source else "TRANSMIT"
-        ipdu_state, ipdu = self.com.locate_ipdu(message, network, direction)
-        if ipdu_state == "MISSING":
+        state, ipdu, signal_node, candidate_count = self.com.locate_signal_endpoint(
+            message, signal, network, direction,
+        )
+        if state == "IPDU_MISSING":
             return None, None, _issue(
                 self.workbook, route, f"SIGNAL_{role}_IPDU_SKIPPED",
                 f"基准ARXML中未找到{role}报文“{message}”在网段“{network}”的ComIPdu，"
                 "可能尚未导入对应DBC，已跳过该信号路由；请更新DBC或核对报文名。",
                 warning=True,
             )
-        if ipdu_state == "AMBIGUOUS":
+        if state == "IPDU_AMBIGUOUS":
             return None, None, _issue(
                 self.workbook, route, f"SIGNAL_{role}_IPDU_AMBIGUOUS",
-                f"{role}报文“{message}”在网段“{network}”存在多个ComIPdu候选，无法安全选择。",
+                f"{role}报文“{message}”在网段“{network}”存在 {candidate_count} 个"
+                "ComIPdu候选，无法安全选择。",
                 warning=False,
             )
-        signal_state, signal_node = self.com.locate_signal(ipdu, message, signal)
-        if signal_state == "MISSING":
+        if state == "SIGNAL_MISSING":
+            ipdu_name = (direct_child_text(ipdu, self.com.document.namespace, "SHORT-NAME")
+                         if ipdu is not None else message)
             return ipdu, None, _issue(
                 self.workbook, route, f"SIGNAL_{role}_SIGNAL_SKIPPED",
-                f"{role}ComIPdu“{direct_child_text(ipdu, self.com.document.namespace, 'SHORT-NAME')}”中"
+                f"{role}ComIPdu“{ipdu_name}”中"
                 f"未找到信号“{signal}”，可能基线DBC版本较旧，已跳过该路由；请更新DBC后重试。",
                 warning=True,
             )
-        if signal_state == "AMBIGUOUS":
+        if state == "SIGNAL_AMBIGUOUS":
             return ipdu, None, _issue(
                 self.workbook, route, f"SIGNAL_{role}_SIGNAL_AMBIGUOUS",
-                f"{role}ComIPdu中信号“{signal}”存在多个候选，无法安全选择。",
+                f"{role}报文“{message}”中的信号“{signal}”存在 {candidate_count} 个"
+                "结构候选，无法安全选择；请清理重复DBC对象或补充项目映射证据。",
                 warning=False,
             )
         return ipdu, signal_node, None

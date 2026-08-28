@@ -16,7 +16,9 @@ class EcucEditor:
     def __init__(self, document: ArxmlDocument, index: ArxmlIndex | None = None) -> None:
         self.document = document
         self.index = index or document.build_index()
-        self.parent_path = unique_template_parent_path(document.root, document.namespace, defs.ECUC_PDU)
+        self.parent_path = unique_template_parent_path(
+            document.root, document.namespace, defs.ECUC_PDU, index=self.index,
+        )
 
     def pdu_operation(
         self, short_name: str, length: int, locations: tuple[SourceLocation, ...],

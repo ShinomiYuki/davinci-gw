@@ -34,7 +34,7 @@ class ValidationCategory(str, Enum):
 
 
 class MutationKind(str, Enum):
-    """第02轮支持的、按模块解耦的新增操作类型。"""
+    """按模块解耦的配置对象或参数类型。"""
 
     ECUC_PDU = "ECUC_PDU"
     CANIF_RX_PDU = "CANIF_RX_PDU"
@@ -46,6 +46,16 @@ class MutationKind(str, Enum):
     COM_GW_SOURCE = "COM_GW_SOURCE"
     COM_GW_DESTINATION = "COM_GW_DESTINATION"
     COM_SIGNAL_TIMEOUT = "COM_SIGNAL_TIMEOUT"
+
+
+class MutationAction(str, Enum):
+    """显式声明变更方向，禁止再用 SHORT-NAME 是否为空推断行为。"""
+
+    CREATE = "CREATE"
+    REMOVE = "REMOVE"
+    UPSERT_PARAMETERS = "UPSERT_PARAMETERS"
+    REMOVE_PARAMETERS = "REMOVE_PARAMETERS"
+    RETAIN = "RETAIN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +196,7 @@ class ValidationReport:
 
 @dataclass(frozen=True, slots=True)
 class PreviewReport:
-    """不修改 ARXML 的结构化变更计数预览。"""
+    """在可丢弃投影树上完成规划后的结构化变更预览。"""
 
     validation: ValidationReport
     target_version: str | None = None
@@ -195,6 +205,7 @@ class PreviewReport:
     direct_delete_count: int = 0
     signal_add_count: int = 0
     signal_delete_count: int = 0
+    plan: "MutationPlan | None" = None
 
     @property
     def is_valid(self) -> bool:
@@ -217,12 +228,13 @@ class WorkbookReadResult:
 
 @dataclass(frozen=True, slots=True)
 class MutationOperation:
-    """与 lxml 无关的单个新增或参数补充操作。"""
+    """与 lxml 无关的创建、删除、参数变更或保留验证操作。"""
 
     kind: MutationKind
     parent_path: str
     short_name: str
     definition_ref: str
+    action: MutationAction = MutationAction.CREATE
     parameters: tuple[tuple[str, str], ...] = ()
     references: tuple[tuple[str, str], ...] = ()
     source_locations: tuple[SourceLocation, ...] = ()
@@ -230,7 +242,8 @@ class MutationOperation:
     @property
     def object_path(self) -> str:
         """返回操作完成后的完整 AUTOSAR 路径。"""
-        return f"{self.parent_path.rstrip('/')}/{self.short_name}"
+        return (f"{self.parent_path.rstrip('/')}/{self.short_name}"
+                if self.short_name else self.parent_path)
 
     def parameter(self, definition_ref: str) -> str | None:
         """按定义引用读取计划参数。"""
@@ -243,7 +256,7 @@ class MutationOperation:
 
 @dataclass(frozen=True, slots=True)
 class MutationPlan:
-    """全部 ADD 完成预检后的不可变变更计划。"""
+    """完整 ADD/DELETE 事务预检后的不可变变更计划。"""
 
     operations: tuple[MutationOperation, ...] = ()
     issues: tuple[ValidationIssue, ...] = ()
@@ -253,7 +266,18 @@ class MutationPlan:
     signal_added_count: int = 0
     signal_existing_count: int = 0
     signal_skipped_count: int = 0
+    direct_deleted_count: int = 0
+    direct_missing_count: int = 0
+    direct_retained_count: int = 0
+    direct_conflict_count: int = 0
+    signal_deleted_count: int = 0
+    signal_missing_count: int = 0
+    signal_retained_count: int = 0
+    signal_timeout_removed_count: int = 0
+    signal_timeout_retained_count: int = 0
+    signal_conflict_count: int = 0
     expected_new_uuids: tuple[str, ...] = ()
+    decisions: tuple["RetentionDecision", ...] = ()
 
     @property
     def errors(self) -> tuple[ValidationIssue, ...]:
@@ -264,12 +288,28 @@ class MutationPlan:
     def expected_paths(self) -> tuple[str, ...]:
         """返回输出验证必须能唯一定位的新增对象路径。"""
         return tuple(operation.object_path for operation in self.operations
-                     if operation.kind is not MutationKind.COM_SIGNAL_TIMEOUT)
+                     if operation.action is MutationAction.CREATE)
 
     @property
     def expected_internal_references(self) -> tuple[str, ...]:
         """返回新增操作中应在本文件内解析的 VALUE-REF 目标。"""
         return tuple(value for operation in self.operations for _, value in operation.references)
+
+    @property
+    def removed_paths(self) -> tuple[str, ...]:
+        """返回输出中必须不存在的容器路径。"""
+        return tuple(operation.object_path for operation in self.operations
+                     if operation.action is MutationAction.REMOVE)
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionDecision:
+    """记录共享对象或超时被保守保留的路径、原因和输入来源。"""
+
+    object_path: str
+    reason: str
+    category: str
+    source_locations: tuple[SourceLocation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

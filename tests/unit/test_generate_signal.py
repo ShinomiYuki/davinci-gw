@@ -82,6 +82,60 @@ def test_ipdu_from_different_network_is_not_accepted(
     assert "OTHER" in _messages(report) and "ComIPdu" in _messages(report)
 
 
+def test_logical_lin_network_uses_unique_message_signal_relationship(
+    workbook_factory: object, lin_target_arxml_factory: object, tmp_path: Path,
+) -> None:
+    """LIN 逻辑节点名无需等于物理通道名，但报文/信号结构候选必须唯一。"""
+    output = tmp_path / "logical_lin.arxml"
+    report = generate_inputs(
+        workbook_factory(
+            direct_rows=(), signal_rows=(signal_row(**{"目标网段": "PSMM"}),),
+        ),
+        lin_target_arxml_factory(channels=("LIN04",)),
+        output,
+    )
+    assert report.is_success, _messages(report)
+    assert report.plan.signal_added_count == 1
+    document = ArxmlDocument.load(output)
+    mapping = document.build_index().find_by_path("/Cfg/Com/ComConfig/GWT_Sig_SRC_SIG_SRC")[0]
+    _, references = semantic_values(mapping, document.namespace, recursive=True)
+    assert references[defs.COM_GW_DEST_SIGNAL_REF] == (
+        "/Cfg/Com/ComConfig/DST_SIG_oDST_MSG_oLIN04_Tx",
+    )
+
+
+def test_logical_lin_network_with_duplicate_message_signal_pairs_is_blocked(
+    workbook_factory: object, lin_target_arxml_factory: object, tmp_path: Path,
+) -> None:
+    output = tmp_path / "ambiguous_lin.arxml"
+    report = generate_inputs(
+        workbook_factory(
+            direct_rows=(), signal_rows=(signal_row(**{"目标网段": "PSMM"}),),
+        ),
+        lin_target_arxml_factory(channels=("LIN03", "LIN04")),
+        output,
+    )
+    assert not report.is_success
+    assert not output.exists()
+    assert "2 个结构候选" in _messages(report)
+
+
+def test_logical_lin_fallback_is_blocked_when_same_pair_also_exists_on_can(
+    workbook_factory: object, lin_target_arxml_factory: object, tmp_path: Path,
+) -> None:
+    output = tmp_path / "ambiguous_lin_can_pair.arxml"
+    report = generate_inputs(
+        workbook_factory(
+            direct_rows=(), signal_rows=(signal_row(**{"目标网段": "PSMM"}),),
+        ),
+        lin_target_arxml_factory(channels=("LIN04", "OTHERMessagelis")),
+        output,
+    )
+    assert not report.is_success
+    assert not output.exists()
+    assert "2 个结构候选" in _messages(report)
+
+
 def test_all_missing_signal_routes_still_write_safe_copy_with_warning(
     workbook_factory: object, arxml_factory: object, tmp_path: Path,
 ) -> None:

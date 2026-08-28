@@ -32,7 +32,7 @@ def test_cli_preview_chinese_output(
     output = capsys.readouterr().out
     assert code == 0
     assert "目标版本：4.84" in output
-    assert "当前开发轮次尚未执行路由写入" in output
+    assert "完整 DELETE 投影与 ADD 规划已通过" in output
 
 
 def test_cli_contract_error_exit_code(
@@ -55,7 +55,7 @@ def test_cli_system_error_exit_code(
     assert "无法解析" in capsys.readouterr().out
 
 
-def test_generate_rejects_delete_and_writes_nothing(
+def test_generate_reports_idempotent_delete_when_target_is_absent(
     workbook_factory: object, arxml_factory: object, tmp_path: object, capsys: object,
 ) -> None:
     output = tmp_path / "blocked.arxml"
@@ -64,9 +64,10 @@ def test_generate_rejects_delete_and_writes_nothing(
     )
     code = main(["generate", "--config", str(config), "--baseline", str(arxml_factory()),
                  "--output", str(output)])
-    assert code == 2
-    assert not output.exists()
-    assert "当前版本仅实现ADD" in capsys.readouterr().out
+    assert code == 0
+    assert output.exists()
+    text = capsys.readouterr().out
+    assert "已不存在并跳过：1" in text
 
 
 def test_generate_cli_success_summary(

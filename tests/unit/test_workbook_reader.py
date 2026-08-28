@@ -146,15 +146,16 @@ def test_duplicate_signal_route(workbook_factory: object) -> None:
 
 
 @pytest.mark.parametrize("kind", ["direct", "signal"])
-def test_add_delete_conflict(workbook_factory: object, kind: str) -> None:
+def test_add_delete_pair_is_valid_replacement(workbook_factory: object, kind: str) -> None:
     if kind == "direct":
         result = read_workbook(workbook_factory(direct_rows=(
             direct_row(), direct_row(**{"操作类型": "DELETE"}))))
     else:
         result = read_workbook(workbook_factory(signal_rows=(
             signal_row(), signal_row(**{"操作类型": "DELETE"}))))
-    assert not result.is_valid
-    assert "ADD和DELETE冲突" in messages(result)
+    assert result.is_valid
+    changes = result.data.direct_routes if kind == "direct" else result.data.signal_routes
+    assert {change.operation.value for change in changes} == {"ADD", "DELETE"}
 
 
 def test_one_to_many_is_not_duplicate(workbook_factory: object) -> None:
