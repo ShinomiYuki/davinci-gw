@@ -11,6 +11,7 @@ dist/
 release/*.zip
 release/*.zip.sha256
 release/davinci-gw-mcp-*-win-x64/
+release/davinci-gw-gui-*-win-x64/
 *.egg-info/
 *.tmp.arxml
 .*.tmp.arxml

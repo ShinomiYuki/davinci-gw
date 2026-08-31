@@ -18,6 +18,7 @@ from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.contracts import (
     ArtifactDto,
     CapabilitiesDto,
+    ChangeDetailDto,
     FeatureCapabilityDto,
     FeatureSummaryDto,
     FileFingerprintDto,
@@ -25,6 +26,7 @@ from davinci_gw.contracts import (
     InputFileDto,
     IssueDto,
     MetricDto,
+    MessageIdentityDto,
     OperationResultDto,
     OperationStatus,
     PreparedSessionDto,
@@ -77,16 +79,18 @@ def _assert_no_internal_objects(value: object, seen: set[int] | None = None) -> 
 
 def test_every_public_dto_has_json_native_serialization() -> None:
     fingerprint = FileFingerprintDto("C:/input", 1, 2, "abc")
-    issue = IssueDto("TEST", "测试", actual_value={"values": [1, True, None]})
+    message = MessageIdentityDto("SOURCE", "SRC_MSG", "0x100")
+    issue = IssueDto("TEST", "测试", actual_value={"values": [1, True, None]}, messages=(message,))
     metric = MetricDto("count", "数量", 1)
-    feature = FeatureSummaryDto("feature", "功能", "READY", (metric,), (issue,))
+    detail = ChangeDetailDto("ADD", "报文", "SRC_MSG · 0x100", "DST_MSG · 0x200", "第 2 行")
+    feature = FeatureSummaryDto("feature", "功能", "READY", (metric,), (issue,), details=(detail,))
     preview = PreviewResultDto(
         "operation", OperationStatus.SUCCESS, (feature,), (issue,),
         (InputFileDto("CONFIG", "C:/input", fingerprint),), "4.84",
     )
     values = (
         UpdateRequestDto("C:/config", "C:/baseline"), fingerprint,
-        InputFileDto("CONFIG", "C:/input", fingerprint), issue, metric, feature,
+        InputFileDto("CONFIG", "C:/input", fingerprint), message, issue, metric, detail, feature,
         FeatureCapabilityDto("feature", "功能", ("PREVIEW",)),
         ProgressEventDto("operation", 1, "stage", "阶段", 1, 1, 100.0),
         ArtifactDto("C:/output", 1, "abc"),

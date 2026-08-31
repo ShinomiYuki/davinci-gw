@@ -6,7 +6,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from davinci_gw.application.generate import prepare_transaction
-from davinci_gw.application.public_mapping import issues_to_dto, public_issue
+from davinci_gw.application.public_mapping import (
+    decisions_to_dto,
+    inspection_checks,
+    issues_to_dto,
+    public_issue,
+)
 from davinci_gw.application.sessions import (
     InputFingerprintChangedError,
     PreparedSessionRecord,
@@ -88,7 +93,7 @@ class GatewayFacade:
             reporter.emit("validate", "校验输入", 0, 1)
             token.checkpoint("validate")
             report = validate_inputs(request.config_path, request.baseline_path)
-            issues = issues_to_dto(report.issues)
+            issues = issues_to_dto(report.issues, report.workbook_data)
             status = OperationStatus.SUCCESS if report.is_valid else OperationStatus.VALIDATION_FAILED
             reporter.emit("complete", "校验完成", 1, 1, cancellable=False)
             return OperationResultDto(operation_id, status, issues)
@@ -131,15 +136,24 @@ class GatewayFacade:
                 initial_baseline = fingerprint_file(baseline_path)
             prepared = prepare_transaction(config_path, baseline_path, checkpoint=checkpoint)
             plan_issues = prepared.plan.issues if prepared.plan else ()
-            public_issues = issues_to_dto(prepared.validation.issues + plan_issues + prepared.issues)
+            decisions = prepared.plan.decisions if prepared.plan else ()
             workbook = prepared.validation.workbook_data
+            public_issues = (
+                issues_to_dto(
+                    prepared.validation.issues + plan_issues + prepared.issues,
+                    workbook,
+                )
+                + decisions_to_dto(decisions, workbook)
+            )
             context = FeatureContext(workbook, prepared.plan, public_issues)
             summaries = self.features.summarize(context)
+            checks = inspection_checks(prepared.validation.arxml_inspection)
             blocking = any(issue.severity == "ERROR" for issue in public_issues)
             if blocking or prepared.plan is None or prepared.document is None:
                 preview = PreviewResultDto(
                     operation_id, OperationStatus.VALIDATION_FAILED, summaries, public_issues,
                     target_version=workbook.target_version if workbook else None,
+                    checks=checks,
                 )
                 reporter.emit("complete", "预处理未通过", 7, 7, cancellable=False)
                 return PreparedSessionDto(
@@ -160,6 +174,7 @@ class GatewayFacade:
             preview = PreviewResultDto(
                 operation_id, OperationStatus.SUCCESS, summaries, public_issues, input_files,
                 workbook.target_version if workbook else None,
+                checks=checks,
             )
             normalized_request = UpdateRequestDto(
                 str(config_path), str(baseline_path), request.output_path, request.overwrite,

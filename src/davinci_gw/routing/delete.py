@@ -454,7 +454,10 @@ class DeleteCoordinator:
             )
             if remaining or unknown_children or source_users or path_users:
                 if remaining:
-                    reason = f"同一 RoutingPath 删除后仍有 {len(remaining)} 个目标，保留源端完整链。"
+                    reason = (
+                        f"本次仅删除指定目标报文；删除后同一源报文仍路由到另外 {len(remaining)} 个"
+                        "目标报文，因此保留 RoutingPath 和源端完整链。"
+                    )
                 elif unknown_children:
                     reason = (f"RoutingPath 内仍有 {len(unknown_children)} 个非标准人工子容器，"
                               "仅删除目标腿并保留父路径和源端链。")
@@ -840,8 +843,10 @@ class DeleteCoordinator:
             )
             if remaining or unknown_children or source_users or mapping_users:
                 if remaining:
-                    reason = (f"Mapping 删除后仍有 {len(remaining)} 个目标，保留 Mapping、"
-                              "Source 和源端超时。")
+                    reason = (
+                        f"本次仅删除指定目标信号；删除后该源信号仍路由到另外 {len(remaining)} 个"
+                        "目标信号，因此保留 Mapping、Source 和源端超时。"
+                    )
                 elif unknown_children:
                     reason = (f"Mapping 内仍有 {len(unknown_children)} 个非标准人工子容器，"
                               "仅删除目标并保留 Mapping、Source 和超时。")

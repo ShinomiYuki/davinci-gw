@@ -110,6 +110,14 @@ class InputFileDto(SerializableDto):
 
 
 @dataclass(frozen=True, slots=True)
+class MessageIdentityDto(SerializableDto):
+    """问题所关联的源端或目标端报文身份。"""
+    role: str
+    name: str | None = None
+    can_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class IssueDto(SerializableDto):
     """前端可直接定位和展示、且不携带异常对象的问题。"""
     code: str
@@ -121,6 +129,7 @@ class IssueDto(SerializableDto):
     row_number: int | None = None
     field_name: str | None = None
     actual_value: JsonValue = None
+    messages: tuple[MessageIdentityDto, ...] = ()
 
     def __post_init__(self) -> None:
         if self.file_path is not None:
@@ -143,6 +152,16 @@ class MetricDto(SerializableDto):
 
 
 @dataclass(frozen=True, slots=True)
+class ChangeDetailDto(SerializableDto):
+    """功能摘要下可供前端动态展示的一条配置请求明细。"""
+    action: str
+    item_type: str
+    source: str
+    target: str
+    location: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class FeatureSummaryDto(SerializableDto):
     """按功能动态组织状态、指标和问题，避免固定路由字段。"""
     feature_id: str
@@ -151,6 +170,7 @@ class FeatureSummaryDto(SerializableDto):
     metrics: tuple[MetricDto, ...] = ()
     issues: tuple[IssueDto, ...] = ()
     metadata: Mapping[str, JsonValue] = MappingProxyType({})
+    details: tuple[ChangeDetailDto, ...] = ()
 
     def __post_init__(self) -> None:
         normalized = _json_safe(self.metadata)
@@ -203,6 +223,15 @@ class CapabilitiesDto(SerializableDto):
 
 
 @dataclass(frozen=True, slots=True)
+class CheckResultDto(SerializableDto):
+    """前端可动态展示的通用输入检查结果。"""
+    check_id: str
+    display_name: str
+    status: str
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PreviewResultDto(SerializableDto):
     """预处理所得公共摘要，不包含内部工作树或计划。"""
     operation_id: str
@@ -212,6 +241,7 @@ class PreviewResultDto(SerializableDto):
     input_files: tuple[InputFileDto, ...] = ()
     target_version: str | None = None
     schema_version: str = SCHEMA_VERSION
+    checks: tuple[CheckResultDto, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -13,7 +13,15 @@
 - 只在证据充分时清除源 ComSignal 超时；其他情况保守保留并说明原因。
 - 在内存工作副本上完成 `DELETE → 投影 → ADD`，通过输出复核后才原子写出。
 
-当前不支持直接报文 LIN 路由、诊断/CanTp 路由、多 ARXML 合并、DaVinci GUI 自动操作和图形界面。
+当前不支持直接报文 LIN 路由、诊断/CanTp 路由、多 ARXML 合并和 DaVinci GUI 自动操作。
+
+## Windows 桌面版
+
+第06轮提供 `davinci-gw-gui.exe` 免安装桌面程序。普通用户解压 ZIP 后直接双击 EXE，不需要安装 Python，也不需要配置 PATH。界面按“选择配置表 → 选择基准 ARXML → 预览 → 生成”工作：预览成功后复用同一份内存事务生成，不会再次解析约 81 MB 的基准文件。
+
+界面支持浏览与拖放、自动建议不重名输出、动态路由统计、问题搜索/筛选/复制、协作式取消和安全关闭。输入文件始终只读，输出不能指向基准，也默认拒绝覆盖已有文件。运行日志位于 `%LOCALAPPDATA%\DaVinciGW\logs\gui.log`，只记录阶段、耗时、状态和异常类型，不记录 Excel/XML 内容。
+
+完整操作、取消语义和常见问题见 [GUI 使用说明](docs/GUI.md)。开发环境可用 `python -m UI` 启动，发布包由 `scripts/build_gui_release.ps1` 构建。
 
 ## 本地 MCP 服务
 
@@ -81,6 +89,13 @@ python -m pip install .
 python -m pip install -e ".[dev]"
 ```
 
+只安装桌面 GUI 可选依赖：
+
+```powershell
+python -m pip install ".[gui]"
+python -m UI
+```
+
 只安装 Python MCP 可选依赖：
 
 ```powershell
@@ -129,8 +144,8 @@ LIN 信号端点不使用 `PSMM ↔ LIN04` 之类的固定项目映射。当配�
 - 任一规划、应用、序列化或临时输出验证失败，整个工作副本丢弃，不修改基准，不留目标或临时半成品。
 - 输出会重新解析，复核四模块、新增/删除/保留语义、参数删除、内部引用、UUID 和 Handle ID。
 
-完整字段规则见 [输入契约](docs/输入契约.md)，删除设计见 [第03轮开发日志](docs/第03轮开发日志.md)，公共接口与扩展架构见 [第04轮开发日志](docs/第04轮开发日志.md)，MCP 的交付证据见 [第05轮开发日志](docs/第05轮开发日志.md)。
+完整字段规则见 [输入契约](docs/输入契约.md)，删除设计见 [第03轮开发日志](docs/第03轮开发日志.md)，公共接口与扩展架构见 [第04轮开发日志](docs/第04轮开发日志.md)，MCP 的交付证据见 [第05轮开发日志](docs/第05轮开发日志.md)，桌面版交付证据见 [第06轮开发日志](docs/第06轮开发日志.md)。
 
 ## 许可证
 
-本项目使用 [MIT License](LICENSE)。
+本项目自身使用 [MIT License](LICENSE)。桌面发布包还随附 [第三方软件许可说明](THIRD_PARTY_NOTICES.md) 和相应许可证原文；正式对外交付前仍应完成公司合规或法务审核。

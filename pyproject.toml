@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "davinci-gw"
-version = "0.2.0"
+version = "0.3.0"
 description = "根据标准化网关路由配置表更新 DaVinci 工程 ARXML。"
 requires-python = ">=3.12"
 dependencies = [
@@ -16,15 +16,23 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=2.1,<3"]
+gui = ["PySide6>=6.8,<6.9"]
+build-gui = [
+  "PySide6>=6.8,<6.9",
+  "pyinstaller>=6.15,<7",
+]
 dev = [
   "mcp>=2.1,<3",
+  "PySide6>=6.8,<6.9",
   "pytest>=8,<10",
+  "pytest-qt>=4.4,<5",
   "pyinstaller>=6.15,<7",
 ]
 
 [project.scripts]
 davinci-gw = "davinci_gw.cli:main"
 davinci-gw-mcp = "davinci_gw.mcp.__main__:main"
+davinci-gw-gui = "UI.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

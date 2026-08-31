@@ -4,8 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from davinci_gw.contracts import FeatureSummaryDto, MetricDto
-from davinci_gw.domain.models import OperationType
+from davinci_gw.contracts import ChangeDetailDto, FeatureSummaryDto, MetricDto
+from davinci_gw.domain.models import (
+    DirectRouteChange,
+    MutationAction,
+    MutationKind,
+    MutationPlan,
+    OperationType,
+    SignalRouteChange,
+)
 
 from .base import FeatureContext
 from .registry import FeatureRegistry
@@ -19,6 +26,30 @@ def _status(context: FeatureContext) -> str:
     if any(issue.severity == "WARNING" for issue in context.issues):
         return "WARNING"
     return "READY"
+
+
+def _location(route: DirectRouteChange | SignalRouteChange) -> str:
+    source = route.source
+    return f"{source.sheet_name} 第 {source.row_number} 行"
+
+
+def _is_changed_route(
+    route: DirectRouteChange | SignalRouteChange,
+    plan: MutationPlan | None,
+    destination_kind: MutationKind,
+) -> bool:
+    """以目标腿操作判断该配置行是否形成了实际路由新增或删除。"""
+    if plan is None:
+        return False
+    expected_action = (
+        MutationAction.CREATE if route.operation is OperationType.ADD else MutationAction.REMOVE
+    )
+    return any(
+        operation.kind is destination_kind
+        and operation.action is expected_action
+        and route.source in operation.source_locations
+        for operation in plan.operations
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +74,16 @@ class DirectMessageFeature:
             MetricDto("retained", "保守保留", plan.direct_retained_count if plan else 0),
             MetricDto("conflicts", "冲突", plan.direct_conflict_count if plan else 0),
         )
-        return FeatureSummaryDto(self.feature_id, self.display_name, _status(context), metrics)
+        details = tuple(ChangeDetailDto(
+            route.operation.value,
+            "报文",
+            f"{route.key.source_message_name} · 0x{route.key.source_can_id:X} · {route.key.source_channel}",
+            f"{route.key.target_message_name} · 0x{route.key.target_can_id:X} · {route.key.target_channel}",
+            _location(route),
+        ) for route in routes if _is_changed_route(route, plan, MutationKind.PDUR_DEST_PDU))
+        return FeatureSummaryDto(
+            self.feature_id, self.display_name, _status(context), metrics, details=details,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +113,18 @@ class SignalRoutingFeature:
             ),
             MetricDto("conflicts", "冲突", plan.signal_conflict_count if plan else 0),
         )
-        return FeatureSummaryDto(self.feature_id, self.display_name, _status(context), metrics)
+        details = tuple(ChangeDetailDto(
+            route.operation.value,
+            "信号",
+            f"{route.key.source_network} · {route.key.source_message_name} · {route.key.source_signal_name}",
+            f"{route.key.target_network} · {route.key.target_message_name} · {route.key.target_signal_name}",
+            _location(route),
+        ) for route in routes if _is_changed_route(
+            route, plan, MutationKind.COM_GW_DESTINATION,
+        ))
+        return FeatureSummaryDto(
+            self.feature_id, self.display_name, _status(context), metrics, details=details,
+        )
 
 
 def default_feature_registry() -> FeatureRegistry:

@@ -4,6 +4,8 @@ from .models import (
     SCHEMA_VERSION,
     ArtifactDto,
     CapabilitiesDto,
+    ChangeDetailDto,
+    CheckResultDto,
     FeatureCapabilityDto,
     FeatureSummaryDto,
     FileFingerprintDto,
@@ -12,6 +14,7 @@ from .models import (
     IssueDto,
     JsonValue,
     MetricDto,
+    MessageIdentityDto,
     OperationResultDto,
     OperationStatus,
     PreparedSessionDto,
@@ -22,8 +25,8 @@ from .models import (
 )
 
 __all__ = [
-    "SCHEMA_VERSION", "ArtifactDto", "CapabilitiesDto", "FeatureCapabilityDto",
+    "SCHEMA_VERSION", "ArtifactDto", "CapabilitiesDto", "ChangeDetailDto", "CheckResultDto", "FeatureCapabilityDto",
     "FeatureSummaryDto", "FileFingerprintDto", "GenerationResultDto", "InputFileDto", "IssueDto", "JsonValue",
-    "MetricDto", "OperationResultDto", "OperationStatus", "PreparedSessionDto",
+    "MessageIdentityDto", "MetricDto", "OperationResultDto", "OperationStatus", "PreparedSessionDto",
     "PreviewResultDto", "ProgressEventDto", "SessionState", "UpdateRequestDto",
 ]
