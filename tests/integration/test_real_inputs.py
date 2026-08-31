@@ -14,6 +14,7 @@ from davinci_gw.application.generate import generate_inputs
 from davinci_gw.application.preview import preview_inputs
 from davinci_gw.application.validate import inspect_baseline
 from davinci_gw.contracts import OperationStatus, UpdateRequestDto
+from tests.conftest import migrate_round07_workbook
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,7 +36,8 @@ def make_add_only_copy(source: Path, target: Path) -> Path:
     """在 tmp_path 中删除 DELETE 数据行，不修改或另存真实输入。"""
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Data Validation extension is not supported.*")
-        workbook = load_workbook(source)
+        migrated = migrate_round07_workbook(source, target)
+        workbook = load_workbook(migrated)
     try:
         for sheet_name in ("直接报文路由", "信号路由"):
             sheet = workbook[sheet_name]
@@ -56,7 +58,8 @@ def make_add_only_copy(source: Path, target: Path) -> Path:
 def test_real_inputs_preview_and_full_transaction_generation(tmp_path: Path) -> None:
     baseline_before = fingerprint(BASELINE)
     config_before = fingerprint(CONFIG)
-    preview = preview_inputs(CONFIG, BASELINE)
+    config = migrate_round07_workbook(CONFIG, tmp_path / "真实路由_round07_v4.84.xlsx")
+    preview = preview_inputs(config, BASELINE)
     assert preview.is_valid, [issue.message for issue in preview.validation.issues]
     assert preview.target_version == "4.84"
     assert preview.reference_count == 12
@@ -72,7 +75,7 @@ def test_real_inputs_preview_and_full_transaction_generation(tmp_path: Path) -> 
     }
     output = tmp_path / "real_full_transaction.arxml"
     facade = GatewayFacade()
-    prepared = facade.prepare(UpdateRequestDto(str(CONFIG), str(BASELINE)))
+    prepared = facade.prepare(UpdateRequestDto(str(config), str(BASELINE)))
     assert prepared.status is OperationStatus.SUCCESS, [issue.message for issue in prepared.issues]
     features = {item.feature_id: item for item in prepared.preview.features}
     direct = {item.key: item.value for item in features["direct_message"].metrics}

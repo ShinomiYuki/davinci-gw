@@ -21,6 +21,10 @@ from davinci_gw.modules.ecuc_editor import EcucEditor
 from davinci_gw.modules.pdur_editor import PduREditor
 
 from .naming import direct_source_name, direct_target_name, pdur_leg_name, pdur_path_name
+from .routing_group_membership import (
+    RoutingGroupMembershipRequest,
+    RoutingGroupMembershipService,
+)
 
 SUPPORTED_CAN_TYPES = {"STANDARD_CAN", "STANDARD_FD_CAN", "EXTENDED_CAN", "EXTENDED_FD_CAN"}
 SUPPORTED_LENGTH_STRATEGIES = {"IGNORE", "SHORTEN", "DISCARD"}
@@ -64,12 +68,18 @@ class DirectRoutePlanner:
     """协调三个模块编辑器完成直接报文预检，但不修改 XML 树。"""
 
     def __init__(
-        self, workbook: WorkbookData, ecuc: EcucEditor, canif: CanIfEditor, pdur: PduREditor,
+        self,
+        workbook: WorkbookData,
+        ecuc: EcucEditor,
+        canif: CanIfEditor,
+        pdur: PduREditor,
+        routing_groups: RoutingGroupMembershipService,
     ) -> None:
         self.workbook = workbook
         self.ecuc = ecuc
         self.canif = canif
         self.pdur = pdur
+        self.routing_groups = routing_groups
         self.references = {entry.channel_name: entry for entry in workbook.reference_data}
 
     def _validate_source(self, routes: list[DirectRouteChange]) -> ValidationIssue | None:
@@ -270,6 +280,15 @@ class DirectRoutePlanner:
                     self.ecuc.inspect(ecuc_target), self.canif.inspect(tx_probe), self.pdur.inspect(dest_probe),
                 )
                 if all(state == "MISSING" for state in target_states):
+                    membership = self.routing_groups.plan_add(RoutingGroupMembershipRequest(
+                        target.routing_group_names, dest_probe.object_path, target.source,
+                        destination_exists=False,
+                    ))
+                    if membership.problems:
+                        issues.extend(_issue(
+                            self.workbook, target, problem.code, problem.message, warning=False,
+                        ) for problem in membership.problems)
+                        continue
                     group_operations.extend((
                         ecuc_target,
                         self.canif.tx_operation(
@@ -282,8 +301,18 @@ class DirectRoutePlanner:
                             allocate_handle=True,
                         ),
                     ))
+                    group_operations.extend(membership.operations)
                     group_added += 1
                 elif all(state == "EXISTING" for state in target_states):
+                    membership = self.routing_groups.plan_add(RoutingGroupMembershipRequest(
+                        target.routing_group_names, dest_probe.object_path, target.source,
+                    ))
+                    if membership.problems:
+                        issues.extend(_issue(
+                            self.workbook, target, problem.code, problem.message, warning=False,
+                        ) for problem in membership.problems)
+                        continue
+                    group_operations.extend(membership.operations)
                     existing += 1
                 else:
                     issues.append(_issue(
@@ -291,8 +320,9 @@ class DirectRoutePlanner:
                         f"目标路由腿“{dest_probe.object_path}”只存在部分对象或同名对象参数不同，"
                         f"状态为{target_states}。请修复冲突后重试。", warning=False,
                     ))
-            if group_added:
+            if group_operations:
                 operations.extend(source_operations)
                 operations.extend(group_operations)
+            if group_added:
                 added += group_added
         return DirectPlanningResult(tuple(operations), tuple(issues), added, existing, skipped)

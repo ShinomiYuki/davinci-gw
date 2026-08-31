@@ -34,6 +34,10 @@ from davinci_gw.modules.ecuc_editor import EcucEditor
 from davinci_gw.modules.pdur_editor import PduREditor
 
 from .naming import direct_source_name, direct_target_name, pdur_leg_name, pdur_path_name
+from .routing_group_membership import (
+    RoutingGroupMembershipRequest,
+    RoutingGroupMembershipService,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,11 +111,15 @@ def _is_removed(path: str, removed_paths: set[str]) -> bool:
 
 def _remaining_referrers(
     index: ArxmlIndex, namespace: str, target_path: str, removed_paths: set[str],
-    *, expected_definition: str | None = None,
+    *,
+    expected_definition: str | None = None,
+    removed_referrers: frozenset[etree._Element] = frozenset(),
 ) -> tuple[etree._Element, ...]:
     """按计划删除后的投影计算引用，绝不读取逐路由修改后的陈旧索引。"""
     remaining: list[etree._Element] = []
     for referrer in index.find_referrers(target_path):
+        if referrer in removed_referrers:
+            continue
         owner = _container_owner(referrer)
         if owner is None:
             continue
@@ -125,7 +133,12 @@ def _remaining_referrers(
 
 
 def _remaining_subtree_referrers(
-    index: ArxmlIndex, namespace: str, node: etree._Element, removed_paths: set[str],
+    index: ArxmlIndex,
+    namespace: str,
+    node: etree._Element,
+    removed_paths: set[str],
+    *,
+    removed_referrers: frozenset[etree._Element] = frozenset(),
 ) -> tuple[etree._Element, ...]:
     """返回计划删除一个完整子树后，仍指向其中任一命名对象的外部容器。"""
     remaining: list[etree._Element] = []
@@ -134,7 +147,10 @@ def _remaining_subtree_referrers(
         if direct_child_text(candidate, namespace, "SHORT-NAME") is None:
             continue
         target_path = autosar_path(candidate, namespace)
-        for owner in _remaining_referrers(index, namespace, target_path, removed_paths):
+        for owner in _remaining_referrers(
+            index, namespace, target_path, removed_paths,
+            removed_referrers=removed_referrers,
+        ):
             if owner not in seen:
                 seen.add(owner)
                 remaining.append(owner)
@@ -204,14 +220,15 @@ class DeleteCoordinator:
         self.ecuc = EcucEditor(document, self.index)
         self.canif = CanIfEditor(document, self.index)
         self.pdur = PduREditor(document, self.index)
+        self.routing_groups = RoutingGroupMembershipService(document, self.index)
         self.com = ComEditor(document, self.index)
         self.references = {entry.channel_name: entry for entry in workbook.reference_data}
-        self.operations: dict[tuple[MutationAction, str], MutationOperation] = {}
+        self.operations: dict[tuple[object, ...], MutationOperation] = {}
         self.decisions: dict[tuple[str, str, str], RetentionDecision] = {}
         self.issues: list[ValidationIssue] = []
 
     def _add_operation(self, operation: MutationOperation) -> None:
-        key = (operation.action, operation.object_path)
+        key = (operation.action,) + operation.identity
         previous = self.operations.get(key)
         if previous is None:
             self.operations[key] = operation
@@ -408,11 +425,36 @@ class DeleteCoordinator:
         if len([issue for issue in self.issues if issue.severity is ValidationSeverity.ERROR]) > before_errors:
             return len(matches), missing
 
+        matches_by_source = {match.route.source: match for match in matches}
+        membership = self.routing_groups.plan_delete(tuple(
+            RoutingGroupMembershipRequest(
+                route.routing_group_names,
+                (
+                    f"{self.pdur.path_parent}/"
+                    f"{pdur_path_name(route.key.source_message_name, route.key.source_can_id, route.key.source_channel)}/"
+                    f"{pdur_leg_name(route.key.target_message_name, route.key.target_can_id, route.key.target_channel)}"
+                ),
+                route.source,
+                destination_exists=route.source in matches_by_source,
+            )
+            for route in routes
+        ))
+        routes_by_source = {route.source: route for route in routes}
+        for problem in membership.problems:
+            route = routes_by_source[problem.source]
+            self.issues.append(_issue(
+                self.workbook, route, problem.code, problem.message,
+            ))
+        if membership.problems:
+            return len(matches), missing
+        removed_group_referrers = self.routing_groups.removal_referrers(membership.operations)
+
         removed_paths = {match.destination_path for match in matches}
         for match in matches:
             destination = self.index.find_by_path(match.destination_path)[0]
             external_users = _remaining_subtree_referrers(
                 self.index, self.document.namespace, destination, removed_paths,
+                removed_referrers=removed_group_referrers,
             )
             if external_users:
                 self.issues.append(_issue(
@@ -423,6 +465,9 @@ class DeleteCoordinator:
                 ))
         if any(issue.severity is ValidationSeverity.ERROR for issue in self.issues):
             return len(matches), missing
+
+        for operation in membership.operations:
+            self._add_operation(operation)
 
         by_path: dict[str, list[_DirectMatch]] = defaultdict(list)
         for match in matches:
@@ -912,9 +957,11 @@ class DeleteCoordinator:
         operations = tuple(sorted(
             self.operations.values(),
             key=lambda operation: (
-                0 if operation.action is MutationAction.REMOVE else
-                1 if operation.action is MutationAction.REMOVE_PARAMETERS else 2,
+                0 if operation.action is MutationAction.REMOVE_REFERENCE else
+                1 if operation.action is MutationAction.REMOVE else
+                2 if operation.action is MutationAction.REMOVE_PARAMETERS else 3,
                 -operation.object_path.count("/"), operation.object_path,
+                operation.references,
             ),
         ))
         return MutationPlan(
@@ -940,7 +987,10 @@ class DeleteCoordinator:
         for operation in plan.operations:
             if operation.action is MutationAction.RETAIN:
                 continue
-            if operation.action is MutationAction.REMOVE:
+            if operation.action is MutationAction.REMOVE_REFERENCE:
+                self.routing_groups.apply_remove(operation)
+                mutated = True
+            elif operation.action is MutationAction.REMOVE:
                 found = self.index.find_by_path(operation.object_path)
                 if len(found) != 1:
                     raise ArxmlStructureError(

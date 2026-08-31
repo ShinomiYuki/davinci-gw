@@ -28,6 +28,7 @@ from davinci_gw.modules.pdur_editor import PduREditor
 from davinci_gw.mutations import MutationHandler, MutationHandlerRegistry
 
 from .direct_route import DirectRoutePlanner
+from .routing_group_membership import RoutingGroupMembershipService
 from .signal_route import SignalRoutePlanner
 
 HANDLE_DEFINITIONS = frozenset({
@@ -57,6 +58,7 @@ class AddCoordinator:
         self.ecuc = EcucEditor(document, self.index)
         self.canif = CanIfEditor(document, self.index)
         self.pdur = PduREditor(document, self.index)
+        self.routing_groups = RoutingGroupMembershipService(document, self.index)
         self.com = ComEditor(document, self.index)
         self.handlers = handler_registry or MutationHandlerRegistry((
             MutationHandler("ecuc", frozenset({MutationKind.ECUC_PDU}), 10, self.ecuc.apply),
@@ -65,6 +67,12 @@ class AddCoordinator:
             MutationHandler("pdur_path", frozenset({MutationKind.PDUR_ROUTING_PATH}), 40, self.pdur.apply),
             MutationHandler("pdur_src", frozenset({MutationKind.PDUR_SRC_PDU}), 50, self.pdur.apply),
             MutationHandler("pdur_dest", frozenset({MutationKind.PDUR_DEST_PDU}), 60, self.pdur.apply),
+            MutationHandler(
+                "pdur_group_membership",
+                frozenset({MutationKind.PDUR_ROUTING_GROUP_MEMBERSHIP}),
+                65,
+                self.routing_groups.apply_add,
+            ),
             MutationHandler("com_mapping", frozenset({MutationKind.COM_GW_MAPPING}), 70, self.com.apply),
             MutationHandler("com_source", frozenset({MutationKind.COM_GW_SOURCE}), 80, self.com.apply),
             MutationHandler(
@@ -78,9 +86,9 @@ class AddCoordinator:
     def _deduplicate_operations(
         self, operations: tuple[MutationOperation, ...], issues: list[ValidationIssue],
     ) -> tuple[MutationOperation, ...]:
-        unique: dict[tuple[MutationAction, MutationKind, str], MutationOperation] = {}
+        unique: dict[tuple[object, ...], MutationOperation] = {}
         for operation in operations:
-            key = (operation.action, operation.kind, operation.object_path)
+            key = (operation.action,) + operation.identity
             previous = unique.get(key)
             if previous is None:
                 unique[key] = operation
@@ -106,7 +114,15 @@ class AddCoordinator:
         baseline_uuids = Counter(node.get("UUID") for node in self.document.root.iter() if node.get("UUID"))
         planned_uuids: set[str] = set()
         for operation in operations:
-            if operation.action is MutationAction.UPSERT_PARAMETERS:
+            if operation.action is MutationAction.ADD_REFERENCE:
+                owner = self.index.find_by_path(operation.parent_path)
+                if len(owner) != 1:
+                    issues.append(_problem(
+                        "PLANNED_REFERENCE_OWNER_UNRESOLVED",
+                        f"路由组成员操作的所属组“{operation.parent_path}”实际找到{len(owner)}个。",
+                    ))
+                candidate_uuids = ()
+            elif operation.action is MutationAction.UPSERT_PARAMETERS:
                 self.com.ensure_timeout_templates(operation)
                 candidate_uuids = self.com.timeout_candidate_uuids(operation)
             else:
@@ -124,7 +140,16 @@ class AddCoordinator:
                         f"计划对象“{operation.object_path}”生成的确定性UUID“{value}”已被占用。",
                     ))
                 planned_uuids.add(value)
-            if operation.action is MutationAction.UPSERT_PARAMETERS:
+            if operation.action in {MutationAction.UPSERT_PARAMETERS, MutationAction.ADD_REFERENCE}:
+                for _, target_path in operation.references:
+                    if target_path in planned_paths:
+                        continue
+                    found = self.index.find_by_path(target_path)
+                    if len(found) != 1:
+                        issues.append(_problem(
+                            "PLANNED_REFERENCE_UNRESOLVED",
+                            f"路由组成员引用“{target_path}”在基准和新增计划中均无法唯一解析。",
+                        ))
                 continue
             for _, target_path in operation.references:
                 if target_path in planned_paths:
@@ -140,7 +165,9 @@ class AddCoordinator:
 
     def plan(self) -> MutationPlan:
         """规划直接报文与信号 ADD，并完成模板、UUID和内部引用预检。"""
-        direct = DirectRoutePlanner(self.workbook, self.ecuc, self.canif, self.pdur).plan(
+        direct = DirectRoutePlanner(
+            self.workbook, self.ecuc, self.canif, self.pdur, self.routing_groups,
+        ).plan(
             tuple(route for route in self.workbook.direct_routes if route.operation.value == "ADD"),
         )
         signal = SignalRoutePlanner(self.workbook, self.com).plan(

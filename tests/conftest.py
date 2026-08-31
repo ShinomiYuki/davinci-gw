@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import copy, deepcopy
 from pathlib import Path
 
 import pytest
 from lxml import etree
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from davinci_gw.modules import definitions as defs
 from davinci_gw.application.generate import generate_inputs
@@ -21,12 +22,36 @@ DIRECT_HEADERS = (
     "目标网段报文Length", "目标网段报文类型", "目标网段CAN通道",
     "目标网段报文Checksum使能", "目标网段报文PnFilter使能",
     "目标网段报文Truncation使能", "路由Length Strategy功能选择", "操作类型",
+    "PduR路由组",
 )
 SIGNAL_HEADERS = (
     "源网段", "源报文名", "源信号名", "字节序", "超时值", "超时时间",
     "源信号组合名", "目标网段", "目标报文名", "目标信号名", "操作类型",
 )
 REFERENCE_HEADERS = ("CAN通道名称", "CanIfTxBuffer名称", "CanIfHrh名称")
+
+
+def migrate_round07_workbook(source: Path, target: Path) -> Path:
+    """为只读真实旧样例补充一个显式测试组，不修改原始输入且不在产品代码中猜组名。"""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="Data Validation extension is not supported.*",
+        )
+        workbook = load_workbook(source)
+    try:
+        sheet = workbook["直接报文路由"]
+        headers = {cell.value: cell.column for cell in sheet[1]}
+        group_column = headers.get("PduR路由组") or sheet.max_column + 1
+        sheet.cell(row=1, column=group_column).value = "PduR路由组"
+        operation_column = headers["操作类型"]
+        for row in range(2, sheet.max_row + 1):
+            operation = str(sheet.cell(row=row, column=operation_column).value or "").strip().upper()
+            if operation in {"ADD", "DELETE"}:
+                sheet.cell(row=row, column=group_column).value = "PduRRoutingPathGroup_DCAN"
+        workbook.save(target)
+    finally:
+        workbook.close()
+    return target
 
 
 def direct_row(**changes: object) -> dict[str, object]:
@@ -41,6 +66,7 @@ def direct_row(**changes: object) -> dict[str, object]:
         "目标网段CAN通道": "DST_CAN", "目标网段报文Checksum使能": None,
         "目标网段报文PnFilter使能": None, "目标网段报文Truncation使能": "Enable",
         "路由Length Strategy功能选择": "IGNORE", "操作类型": "ADD",
+        "PduR路由组": "DefaultRoutingGroup",
     }
     row.update(changes)
     return row
@@ -119,6 +145,7 @@ def arxml_factory(tmp_path: Path) -> Callable[..., Path]:
         missing: str | None = None,
         duplicate: str | None = None,
         extra: bool = False,
+        routing_groups: Mapping[str, Sequence[str]] | None = None,
     ) -> Path:
         ns = "http://autosar.org/schema/r4.0"
         xsi = "http://www.w3.org/2001/XMLSchema-instance"
@@ -151,8 +178,12 @@ def arxml_factory(tmp_path: Path) -> Callable[..., Path]:
             if group is None:
                 group = etree.SubElement(node, f"{{{ns}}}REFERENCE-VALUES")
             entry = etree.SubElement(group, f"{{{ns}}}ECUC-REFERENCE-VALUE")
-            etree.SubElement(entry, f"{{{ns}}}DEFINITION-REF").text = definition
-            etree.SubElement(entry, f"{{{ns}}}VALUE-REF").text = value
+            definition_node = etree.SubElement(entry, f"{{{ns}}}DEFINITION-REF")
+            definition_node.set("DEST", "ECUC-REFERENCE-DEF")
+            definition_node.text = definition
+            value_node = etree.SubElement(entry, f"{{{ns}}}VALUE-REF")
+            value_node.set("DEST", "ECUC-CONTAINER-VALUE")
+            value_node.text = value
 
         def add_container(
             group: etree._Element, short_name: str, definition: str,
@@ -253,6 +284,19 @@ def arxml_factory(tmp_path: Path) -> Callable[..., Path]:
                     ((defs.PDUR_DEST_PDU_REF, "/Cfg/EcuC/EcucPduCollection/ExistingPdu_Rx"),
                      (defs.PDUR_DEST_MODULE_REF, "/Cfg/PduR/CanIf")),
                 )
+                group_members = routing_groups if routing_groups is not None else {
+                    "DefaultRoutingGroup": (
+                        "/Cfg/PduR/PduRRoutingTables/PduRRoutingTable/ExistingPath/ExistingDest",
+                    ),
+                }
+                for group_name, members in group_members.items():
+                    routing_group = add_container(
+                        tables_subs, group_name, defs.PDUR_ROUTING_GROUP,
+                        ((defs.PDUR_ROUTING_GROUP_ENABLED, "true", "NUMERICAL"),
+                         (defs.PDUR_ROUTING_GROUP_ID, 1, "NUMERICAL")),
+                    )
+                    for member in members:
+                        add_reference(routing_group, defs.PDUR_ROUTING_GROUP_DEST_REF, member)
             elif name == "Com":
                 config = add_container(containers, "ComConfig", "/MICROSAR/Com/ComConfig")
                 config_subs = subcontainers(config)

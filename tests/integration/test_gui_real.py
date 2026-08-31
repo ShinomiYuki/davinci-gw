@@ -14,6 +14,7 @@ from UI.state import GuiState
 from UI.task_runner import QtTaskRunner
 from UI.view_model import GatewayViewModel
 from davinci_gw.arxml.document import ArxmlDocument
+from tests.conftest import migrate_round07_workbook
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "input" / "网关路由配置表_v4.84.xlsx"
@@ -53,7 +54,8 @@ def test_real_gui_cancel_preview_commit_remains_responsive(
     qtbot.addWidget(window)
     window.show()
     output = tmp_path / "真实 GUI 输出 空格.arxml"
-    view_model.set_config_path(str(CONFIG_PATH))
+    config = migrate_round07_workbook(CONFIG_PATH, tmp_path / "真实_GUI_round07_v4.84.xlsx")
+    view_model.set_config_path(str(config))
     view_model.set_baseline_path(str(BASELINE_PATH))
     view_model.set_output_path(str(output), manual=True)
 

@@ -42,6 +42,7 @@ class MutationKind(str, Enum):
     PDUR_ROUTING_PATH = "PDUR_ROUTING_PATH"
     PDUR_SRC_PDU = "PDUR_SRC_PDU"
     PDUR_DEST_PDU = "PDUR_DEST_PDU"
+    PDUR_ROUTING_GROUP_MEMBERSHIP = "PDUR_ROUTING_GROUP_MEMBERSHIP"
     COM_GW_MAPPING = "COM_GW_MAPPING"
     COM_GW_SOURCE = "COM_GW_SOURCE"
     COM_GW_DESTINATION = "COM_GW_DESTINATION"
@@ -55,6 +56,8 @@ class MutationAction(str, Enum):
     REMOVE = "REMOVE"
     UPSERT_PARAMETERS = "UPSERT_PARAMETERS"
     REMOVE_PARAMETERS = "REMOVE_PARAMETERS"
+    ADD_REFERENCE = "ADD_REFERENCE"
+    REMOVE_REFERENCE = "REMOVE_REFERENCE"
     RETAIN = "RETAIN"
 
 
@@ -94,6 +97,7 @@ class DirectRouteChange:
     target_truncation_enabled: str | None
     length_strategy: str | None
     source: SourceLocation
+    routing_group_names: tuple[str, ...] = ()
 
     @property
     def source_can_id_text(self) -> str:
@@ -253,6 +257,13 @@ class MutationOperation:
         """按定义引用读取计划引用。"""
         return dict(self.references).get(definition_ref)
 
+    @property
+    def identity(self) -> tuple[object, ...]:
+        """返回去重所需的完整业务身份；引用操作不能只按所属组路径区分。"""
+        if self.action in {MutationAction.ADD_REFERENCE, MutationAction.REMOVE_REFERENCE}:
+            return self.kind, self.parent_path, self.definition_ref, self.references
+        return self.kind, self.object_path
+
 
 @dataclass(frozen=True, slots=True)
 class MutationPlan:
@@ -293,7 +304,12 @@ class MutationPlan:
     @property
     def expected_internal_references(self) -> tuple[str, ...]:
         """返回新增操作中应在本文件内解析的 VALUE-REF 目标。"""
-        return tuple(value for operation in self.operations for _, value in operation.references)
+        return tuple(
+            value
+            for operation in self.operations
+            if operation.action in {MutationAction.CREATE, MutationAction.ADD_REFERENCE}
+            for _, value in operation.references
+        )
 
     @property
     def removed_paths(self) -> tuple[str, ...]:

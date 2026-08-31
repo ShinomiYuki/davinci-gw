@@ -23,6 +23,7 @@ def test_reads_three_execution_sheets(workbook_factory: object) -> None:
     assert len(result.data.reference_data) == 2
     assert len(result.data.direct_routes) == 1
     assert len(result.data.signal_routes) == 1
+    assert result.data.direct_routes[0].routing_group_names == ("DefaultRoutingGroup",)
 
 
 def test_header_order_can_change(workbook_factory: object) -> None:
@@ -42,10 +43,29 @@ def test_missing_required_sheet(workbook_factory: object, sheet: str) -> None:
 
 
 def test_missing_required_header(workbook_factory: object) -> None:
-    result = read_workbook(workbook_factory(direct_headers=DIRECT_HEADERS[:-1]))
+    result = read_workbook(workbook_factory(
+        direct_headers=tuple(header for header in DIRECT_HEADERS if header != "操作类型"),
+    ))
     assert not result.is_valid
     assert "操作类型" in messages(result)
     assert "第1行" in messages(result)
+
+
+def test_routing_groups_are_split_trimmed_and_stably_deduplicated(workbook_factory: object) -> None:
+    result = read_workbook(workbook_factory(direct_rows=(direct_row(**{
+        "PduR路由组": " GroupB ; GroupA;;GroupB ; ",
+    }),)))
+    assert result.is_valid
+    assert result.data.direct_routes[0].routing_group_names == ("GroupB", "GroupA")
+
+
+@pytest.mark.parametrize("value", [None, " ; ", "GroupA；GroupB", 12])
+def test_routing_groups_must_be_explicit_english_semicolon_text(
+    workbook_factory: object, value: object,
+) -> None:
+    result = read_workbook(workbook_factory(direct_rows=(direct_row(**{"PduR路由组": value}),)))
+    assert not result.is_valid
+    assert "PduR路由组" in messages(result)
 
 
 def test_blank_and_formatted_rows_are_ignored(workbook_factory: object) -> None:

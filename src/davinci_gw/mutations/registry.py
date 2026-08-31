@@ -65,7 +65,10 @@ class MutationHandlerRegistry:
 
     def sort_operations(self, operations: tuple[MutationOperation, ...]) -> tuple[MutationOperation, ...]:
         """先按处理器优先级、再按对象路径稳定排序。"""
-        return tuple(sorted(operations, key=lambda item: (self.order_for(item.kind), item.object_path)))
+        return tuple(sorted(
+            operations,
+            key=lambda item: (self.order_for(item.kind), item.object_path, item.references),
+        ))
 
     def apply_operations(self, context: MutationContext, operations: tuple[MutationOperation, ...]) -> None:
         """按确定顺序调用处理器，不在协调器中维护 kind 分支。"""

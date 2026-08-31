@@ -9,6 +9,10 @@ from davinci_gw.domain.errors import OutputValidationError
 from davinci_gw.domain.models import MutationAction, MutationKind, MutationPlan
 from davinci_gw.modules import definitions as defs
 from davinci_gw.modules.common import definition_ref, operation_matches, semantic_values
+from davinci_gw.routing.routing_group_membership import (
+    RoutingGroupMembershipService,
+    RoutingGroupModelError,
+)
 
 HANDLE_DEFINITIONS = (
     defs.CANIF_RX_HANDLE, defs.CANIF_TX_HANDLE, defs.PDUR_SRC_HANDLE, defs.PDUR_DEST_HANDLE,
@@ -19,12 +23,42 @@ def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> No
     """验证计划操作已完整落盘，且新引用在输出文件中唯一可解析。"""
     document.inspect()
     index = document.build_index()
+    routing_groups = RoutingGroupMembershipService(document, index)
     failures: list[str] = []
     recreated_paths = {
         operation.object_path for operation in plan.operations
         if operation.action is MutationAction.CREATE
     }
+    recreated_memberships = {
+        (operation.parent_path, operation.definition_ref, operation.references)
+        for operation in plan.operations
+        if operation.action is MutationAction.ADD_REFERENCE
+    }
     for operation in plan.operations:
+        if operation.action in {MutationAction.ADD_REFERENCE, MutationAction.REMOVE_REFERENCE}:
+            target = operation.reference(defs.PDUR_ROUTING_GROUP_DEST_REF)
+            if target is None:
+                failures.append(f"路由组成员操作“{operation.parent_path}”缺少目标引用")
+                continue
+            try:
+                count = routing_groups.reference_count(operation.parent_path, target)
+            except RoutingGroupModelError as exc:
+                failures.append(str(exc))
+                continue
+            identity = (operation.parent_path, operation.definition_ref, operation.references)
+            if (operation.action is MutationAction.REMOVE_REFERENCE
+                    and identity in recreated_memberships):
+                # DELETE→ADD 替换对的最终投影必须保留一条引用；后续 ADD 分支会验证其唯一性。
+                continue
+            expected = 1 if operation.action is MutationAction.ADD_REFERENCE else 0
+            if count != expected:
+                failures.append(
+                    f"路由组“{operation.parent_path}”到“{target}”的成员引用实际为{count}个，"
+                    f"计划为{expected}个"
+                )
+            if operation.action is MutationAction.ADD_REFERENCE and len(index.find_by_path(target)) != 1:
+                failures.append(f"新增路由组成员目标“{target}”无法在输出中唯一解析")
+            continue
         if operation.action is MutationAction.REMOVE:
             # DELETE＋ADD 替换对允许同一路径在投影上被重新创建；CREATE 语义在后续分支验证。
             if operation.object_path in recreated_paths:
