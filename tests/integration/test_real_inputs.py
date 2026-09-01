@@ -17,13 +17,20 @@ from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.contracts import OperationStatus, UpdateRequestDto
 from davinci_gw.input.workbook_reader import read_workbook
 from davinci_gw.modules import definitions as defs
+from davinci_gw.modules.canif_editor import CanIfEditor
 from davinci_gw.modules.common import semantic_values
+from davinci_gw.modules.ecuc_editor import EcucEditor
+from davinci_gw.modules.pdur_editor import PduREditor
+from davinci_gw.routing.direct_route import DirectRoutePlanner
 from davinci_gw.routing.routing_group_membership import RoutingGroupMembershipService
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "input" / "网关路由配置表_v4.84.xlsx"
 BASELINE = ROOT / "input" / "T13J.arxml"
+E0Y_CONFIG = ROOT / "input" / "网关路由配置表_v4.7.xlsx"
+E0Y_BASELINE = ROOT / "input" / "E0Y_BEV_Canada_20260901.arxml"
+E0Y_CONTAMINATED = ROOT / "input" / "E0Y_BEV_Canada_20260901_v4.7.arxml"
 
 
 def fingerprint(path: Path) -> tuple[int, int, str]:
@@ -114,6 +121,7 @@ def test_real_inputs_preview_and_full_transaction_generation(tmp_path: Path) -> 
         for issue in baseline_warnings
     )
     assert all("目标 PduRDestPdu" not in issue.message for issue in baseline_warnings)
+    assert all("该组主通道为" in issue.message for issue in baseline_warnings)
     features = {item.feature_id: item for item in prepared.preview.features}
     direct = {item.key: item.value for item in features["direct_message"].metrics}
     signal = {item.key: item.value for item in features["signal_route"].metrics}
@@ -152,3 +160,63 @@ def test_real_add_only_generation_processes_standard_routes(tmp_path: Path) -> N
     assert report.plan.signal_skipped_count == 0
     assert inspect_baseline(output).schema_filename == "AUTOSAR_00049.xsd"
     assert fingerprint(BASELINE) == before
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    not E0Y_CONFIG.exists() or not E0Y_BASELINE.exists() or not E0Y_CONTAMINATED.exists(),
+    reason="本地 E0Y 真实问题输入不存在",
+)
+def test_e0y_existing_routes_and_contaminated_output_are_semantically_classified() -> None:
+    """原始基线识别四条既有路由；已污染输出阻断且不规划第三套对象。"""
+    config_before = fingerprint(E0Y_CONFIG)
+    baseline_before = fingerprint(E0Y_BASELINE)
+    contaminated_before = fingerprint(E0Y_CONTAMINATED)
+    workbook = read_workbook(E0Y_CONFIG).data
+    expected = {
+        ("ADS_COM_1", 0x30F, "DACAN", "DMCAN"),
+        ("ADAS_ZCU_1", 0x40D, "DACAN", "ICCAN"),
+        ("ADAS_ZCU_2", 0x55A, "DACAN", "ICCAN"),
+        ("ADAS_ZCU_2", 0x55A, "DACAN", "DKCAN"),
+    }
+    routes = tuple(
+        route for route in workbook.direct_routes
+        if (
+            route.key.source_message_name,
+            route.key.source_can_id,
+            route.key.source_channel,
+            route.key.target_channel,
+        ) in expected
+    )
+    assert len(routes) == 4
+
+    def plan(path: Path):
+        document = ArxmlDocument.load(path)
+        index = document.build_index()
+        return DirectRoutePlanner(
+            workbook,
+            EcucEditor(document, index),
+            CanIfEditor(document, index),
+            PduREditor(document, index),
+            RoutingGroupMembershipService(
+                document, index, reference_data=workbook.reference_data,
+            ),
+        ).plan(routes)
+
+    baseline_plan = plan(E0Y_BASELINE)
+    assert not [issue for issue in baseline_plan.issues if issue.severity.value == "ERROR"]
+    assert (baseline_plan.added, baseline_plan.existing, baseline_plan.skipped) == (0, 4, 0)
+    assert baseline_plan.operations == ()
+
+    contaminated_plan = plan(E0Y_CONTAMINATED)
+    contaminated_errors = tuple(
+        issue for issue in contaminated_plan.issues if issue.severity.value == "ERROR"
+    )
+    assert contaminated_errors
+    assert contaminated_plan.operations == ()
+    assert "DIRECT_SOURCE_CHAIN_AMBIGUOUS" in {
+        issue.code for issue in contaminated_errors
+    }
+    assert (fingerprint(E0Y_CONFIG), fingerprint(E0Y_BASELINE), fingerprint(E0Y_CONTAMINATED)) == (
+        config_before, baseline_before, contaminated_before,
+    )

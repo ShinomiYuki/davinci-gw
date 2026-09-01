@@ -22,6 +22,7 @@ from davinci_gw.modules.ecuc_editor import EcucEditor
 from davinci_gw.modules.pdur_editor import PduREditor
 
 from .naming import direct_source_name, direct_target_name, pdur_leg_name, pdur_path_name
+from .direct_route_locator import DirectRouteSemanticLocator, DirectSemanticState
 from .routing_group_membership import (
     RoutingGroupMembershipProblem,
     RoutingGroupMembershipRequest,
@@ -107,6 +108,14 @@ class DirectRoutePlanner:
         self.pdur = pdur
         self.routing_groups = routing_groups
         self.references = {entry.channel_name: entry for entry in workbook.reference_data}
+        self.locator = DirectRouteSemanticLocator(
+            canif.document,
+            canif.index,
+            routing_groups,
+            source_module_ref=pdur.src_module_ref,
+            destination_module_ref=pdur.dest_module_ref,
+            lock_ref=pdur.lock_ref,
+        )
 
     def _validate_source(self, routes: list[DirectRouteChange]) -> ValidationIssue | None:
         route = routes[0]
@@ -234,26 +243,80 @@ class DirectRoutePlanner:
                 skipped += len(group)
                 continue
 
+            prepared_targets: list[tuple[DirectRouteChange, str]] = []
+            for target in group:
+                target_issue = self._validate_target(target)
+                if target_issue:
+                    issues.append(target_issue)
+                    skipped += 1
+                    continue
+                buffer_path, target_channel_issue = self._channel_object(target, source=False)
+                if target_channel_issue:
+                    issues.append(target_channel_issue)
+                    skipped += 1
+                    continue
+                prepared_targets.append((target, buffer_path or ""))
+            if not prepared_targets:
+                continue
+
             locations = _locations(group)
-            source_name = direct_source_name(route.key.source_message_name, route.key.source_channel)
-            path_name = pdur_path_name(route.key.source_message_name, route.key.source_can_id, route.key.source_channel)
-            src_name = pdur_leg_name(route.key.source_message_name, route.key.source_can_id, route.key.source_channel)
-            ecuc_source = self.ecuc.pdu_operation(source_name, route.source_length or 0, locations)
-            rx_probe = self.canif.rx_operation(
-                route, source_name, ecuc_source.object_path, hrh_path or "", locations,
-                allocate_handle=False,
+            first_target, first_buffer = prepared_targets[0]
+            first_semantic = self.locator.locate(
+                first_target, hrh_path=hrh_path or "", buffer_path=first_buffer,
             )
-            pdur_path = self.pdur.path_operation(path_name, locations)
-            pdur_source_probe = self.pdur.source_operation(
-                pdur_path.object_path, src_name, ecuc_source.object_path, locations,
-                allocate_handle=False,
-            )
-            source_states = (
-                self.ecuc.inspect(ecuc_source), self.canif.inspect(rx_probe),
-                self.pdur.inspect(pdur_path), self.pdur.inspect(pdur_source_probe),
-            )
+            source_resolution = first_semantic.source
+            if source_resolution.state in {
+                DirectSemanticState.PARTIAL_CONFLICT, DirectSemanticState.AMBIGUOUS,
+            }:
+                issues.append(_issue(
+                    self.workbook, route,
+                    "DIRECT_SOURCE_CHAIN_AMBIGUOUS"
+                    if source_resolution.state is DirectSemanticState.AMBIGUOUS
+                    else "DIRECT_SOURCE_CHAIN_CONFLICT",
+                    f"源路由语义定位状态为 {source_resolution.state.value}；"
+                    f"候选={list(source_resolution.candidates)}；{source_resolution.detail}",
+                    warning=False,
+                ))
+                skipped += len(prepared_targets)
+                continue
+
             source_operations: list[MutationOperation] = []
-            if all(state == "MISSING" for state in source_states):
+            if source_resolution.state is DirectSemanticState.FOUND:
+                assert source_resolution.chain is not None
+                source_path = source_resolution.chain.routing_path
+            else:
+                source_name = direct_source_name(route.key.source_message_name, route.key.source_channel)
+                path_name = pdur_path_name(
+                    route.key.source_message_name, route.key.source_can_id, route.key.source_channel,
+                )
+                src_name = pdur_leg_name(
+                    route.key.source_message_name, route.key.source_can_id, route.key.source_channel,
+                )
+                ecuc_source = self.ecuc.pdu_operation(
+                    source_name, route.source_length or 0, locations,
+                )
+                rx_probe = self.canif.rx_operation(
+                    route, source_name, ecuc_source.object_path, hrh_path or "", locations,
+                    allocate_handle=False,
+                )
+                pdur_path = self.pdur.path_operation(path_name, locations)
+                pdur_source_probe = self.pdur.source_operation(
+                    pdur_path.object_path, src_name, ecuc_source.object_path, locations,
+                    allocate_handle=False,
+                )
+                source_states = (
+                    self.ecuc.inspect(ecuc_source), self.canif.inspect(rx_probe),
+                    self.pdur.inspect(pdur_path), self.pdur.inspect(pdur_source_probe),
+                )
+                if not all(state == "MISSING" for state in source_states):
+                    issues.append(_issue(
+                        self.workbook, route, "DIRECT_SOURCE_CHAIN_CONFLICT",
+                        f"语义定位未找到完整源链，但当前命名路径只存在部分对象或参数不同，"
+                        f"状态为{source_states}。请在 DaVinci 中修复后重试。", warning=False,
+                    ))
+                    skipped += len(prepared_targets)
+                    continue
+                source_path = pdur_path.object_path
                 source_operations.extend((
                     ecuc_source,
                     self.canif.rx_operation(
@@ -266,88 +329,124 @@ class DirectRoutePlanner:
                         allocate_handle=True,
                     ),
                 ))
-            elif not all(state == "EXISTING" for state in source_states):
-                issues.append(_issue(
-                    self.workbook, route, "DIRECT_SOURCE_CHAIN_CONFLICT",
-                    f"源路由链“{pdur_path.object_path}”只存在部分对象或同名对象参数不同，"
-                    f"状态为{source_states}。请在DaVinci中修复该链后重试。", warning=False,
-                ))
-                continue
 
             group_operations: list[MutationOperation] = []
             group_added = 0
-            for target in group:
-                target_issue = self._validate_target(target)
-                if target_issue:
-                    issues.append(target_issue)
+            for target, buffer_path in prepared_targets:
+                semantic = self.locator.locate(
+                    target, hrh_path=hrh_path or "", buffer_path=buffer_path,
+                )
+                if semantic.leg.state in {
+                    DirectSemanticState.PARTIAL_CONFLICT, DirectSemanticState.AMBIGUOUS,
+                }:
+                    issues.append(_issue(
+                        self.workbook, target,
+                        "DIRECT_ROUTE_LEG_AMBIGUOUS"
+                        if semantic.leg.state is DirectSemanticState.AMBIGUOUS
+                        else "DIRECT_ROUTE_LEG_CONFLICT",
+                        f"目标腿语义定位状态为 {semantic.leg.state.value}；"
+                        f"候选={list(semantic.leg.candidates)}；{semantic.leg.detail}",
+                        warning=False,
+                    ))
                     skipped += 1
                     continue
-                buffer_path, target_channel_issue = self._channel_object(target, source=False)
-                if target_channel_issue:
-                    issues.append(target_channel_issue)
+                if semantic.leg.state is DirectSemanticState.FOUND:
+                    assert semantic.leg.leg is not None
+                    membership = self.routing_groups.plan_add(RoutingGroupMembershipRequest(
+                        target.key.target_channel, buffer_path,
+                        semantic.leg.leg.destination_path, target.source,
+                    ))
+                    issues.extend(_membership_issue(
+                        self.workbook, target, problem, self.routing_groups.document.source_path,
+                    ) for problem in membership.problems)
+                    if any(not problem.warning for problem in membership.problems):
+                        skipped += 1
+                        continue
+                    group_operations.extend(membership.operations)
+                    existing += 1
+                    continue
+
+                if semantic.target.state in {
+                    DirectSemanticState.PARTIAL_CONFLICT, DirectSemanticState.AMBIGUOUS,
+                }:
+                    issues.append(_issue(
+                        self.workbook, target,
+                        "DIRECT_TARGET_ENDPOINT_AMBIGUOUS"
+                        if semantic.target.state is DirectSemanticState.AMBIGUOUS
+                        else "DIRECT_TARGET_ENDPOINT_CONFLICT",
+                        f"目标端语义定位状态为 {semantic.target.state.value}；"
+                        f"候选={list(semantic.target.candidates)}；{semantic.target.detail}",
+                        warning=False,
+                    ))
                     skipped += 1
                     continue
+
                 target_name = direct_target_name(target.key.target_message_name, target.key.target_channel)
                 dest_name = pdur_leg_name(
                     target.key.target_message_name, target.key.target_can_id, target.key.target_channel,
                 )
                 target_location = (target.source,)
-                ecuc_target = self.ecuc.pdu_operation(target_name, target.target_length or 0, target_location)
-                tx_probe = self.canif.tx_operation(
-                    target, target_name, ecuc_target.object_path, buffer_path or "", target_location,
-                    allocate_handle=False,
-                )
+                target_operations: list[MutationOperation] = []
+                if semantic.target.state is DirectSemanticState.FOUND:
+                    assert semantic.target.endpoint is not None
+                    target_ecuc_path = semantic.target.endpoint.ecuc_path
+                else:
+                    ecuc_target = self.ecuc.pdu_operation(
+                        target_name, target.target_length or 0, target_location,
+                    )
+                    tx_probe = self.canif.tx_operation(
+                        target, target_name, ecuc_target.object_path, buffer_path, target_location,
+                        allocate_handle=False,
+                    )
+                    endpoint_states = self.ecuc.inspect(ecuc_target), self.canif.inspect(tx_probe)
+                    if not all(state == "MISSING" for state in endpoint_states):
+                        issues.append(_issue(
+                            self.workbook, target, "DIRECT_TARGET_ENDPOINT_CONFLICT",
+                            f"语义定位未找到可复用目标端，但当前命名端点存在部分对象或参数不同，"
+                            f"状态为{endpoint_states}。", warning=False,
+                        ))
+                        skipped += 1
+                        continue
+                    target_ecuc_path = ecuc_target.object_path
+                    target_operations.extend((
+                        ecuc_target,
+                        self.canif.tx_operation(
+                            target, target_name, target_ecuc_path, buffer_path, target_location,
+                            allocate_handle=True,
+                        ),
+                    ))
                 dest_probe = self.pdur.destination_operation(
-                    pdur_path.object_path, dest_name, ecuc_target.object_path,
+                    source_path, dest_name, target_ecuc_path,
                     (target.length_strategy or "").upper(), target_location,
                     allocate_handle=False,
                 )
-                target_states = (
-                    self.ecuc.inspect(ecuc_target), self.canif.inspect(tx_probe), self.pdur.inspect(dest_probe),
-                )
-                if all(state == "MISSING" for state in target_states):
-                    membership = self.routing_groups.plan_add(RoutingGroupMembershipRequest(
-                        target.key.target_channel, buffer_path or "", dest_probe.object_path,
-                        target.source,
-                        destination_exists=False,
-                    ))
-                    issues.extend(_membership_issue(
-                        self.workbook, target, problem, self.routing_groups.document.source_path,
-                    ) for problem in membership.problems)
-                    if any(not problem.warning for problem in membership.problems):
-                        continue
-                    group_operations.extend((
-                        ecuc_target,
-                        self.canif.tx_operation(
-                            target, target_name, ecuc_target.object_path, buffer_path or "", target_location,
-                            allocate_handle=True,
-                        ),
-                        self.pdur.destination_operation(
-                            pdur_path.object_path, dest_name, ecuc_target.object_path,
-                            (target.length_strategy or "").upper(), target_location,
-                            allocate_handle=True,
-                        ),
-                    ))
-                    group_operations.extend(membership.operations)
-                    group_added += 1
-                elif all(state == "EXISTING" for state in target_states):
-                    membership = self.routing_groups.plan_add(RoutingGroupMembershipRequest(
-                        target.key.target_channel, buffer_path or "", dest_probe.object_path,
-                        target.source,
-                    ))
-                    issues.extend(_membership_issue(
-                        self.workbook, target, problem, self.routing_groups.document.source_path,
-                    ) for problem in membership.problems)
-                    if any(not problem.warning for problem in membership.problems):
-                        continue
-                    group_operations.extend(membership.operations)
-                    existing += 1
-                else:
+                destination_state = self.pdur.inspect(dest_probe)
+                if destination_state != "MISSING":
                     issues.append(_issue(
-                        self.workbook, target, "DIRECT_TARGET_CHAIN_CONFLICT",
-                        f"目标路由腿“{dest_probe.object_path}”只存在部分对象或同名对象参数不同，"
-                        f"状态为{target_states}。请修复冲突后重试。", warning=False,
+                        self.workbook, target, "DIRECT_ROUTE_LEG_CONFLICT",
+                        f"语义定位未找到目标腿，但计划路径“{dest_probe.object_path}”状态为"
+                        f"{destination_state}。请修复同名冲突后重试。", warning=False,
                     ))
+                    skipped += 1
+                    continue
+                membership = self.routing_groups.plan_add(RoutingGroupMembershipRequest(
+                    target.key.target_channel, buffer_path, dest_probe.object_path,
+                    target.source, destination_exists=False,
+                ))
+                issues.extend(_membership_issue(
+                    self.workbook, target, problem, self.routing_groups.document.source_path,
+                ) for problem in membership.problems)
+                if any(not problem.warning for problem in membership.problems):
+                    skipped += 1
+                    continue
+                group_operations.extend(target_operations)
+                group_operations.append(self.pdur.destination_operation(
+                    source_path, dest_name, target_ecuc_path,
+                    (target.length_strategy or "").upper(), target_location,
+                    allocate_handle=True,
+                ))
+                group_operations.extend(membership.operations)
+                group_added += 1
             if group_operations:
                 operations.extend(source_operations)
                 operations.extend(group_operations)

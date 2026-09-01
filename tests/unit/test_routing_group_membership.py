@@ -9,10 +9,15 @@ from lxml import etree
 
 from davinci_gw.application.generate import generate_inputs
 from davinci_gw.arxml.document import ArxmlDocument
-from davinci_gw.domain.models import MutationAction, MutationKind
+from davinci_gw.domain.models import MutationAction, MutationKind, SourceLocation
 from davinci_gw.modules import definitions as defs
 from davinci_gw.modules.common import definition_ref, semantic_values
-from davinci_gw.routing.routing_group_membership import RoutingGroupMembershipService
+from davinci_gw.routing.routing_group_membership import (
+    RoutingGroupMembershipRequest,
+    RoutingGroupMembershipService,
+    _GroupState,
+    _MemberEntry,
+)
 from tests.conftest import direct_row
 
 DESTINATION = (
@@ -138,6 +143,33 @@ def test_existing_route_add_repairs_missing_membership_but_delete_blocks(
     assert not delete_report.is_success and not blocked.exists()
     assert "PDUR_ROUTING_GROUP_MEMBER_NOT_FOUND" in {
         issue.code for issue in delete_report.errors
+    }
+
+
+def test_add_blocks_existing_destination_in_wrong_group(
+    arxml_factory, monkeypatch,
+) -> None:
+    """既有 DestPdu 的实际组与目标通道主组不一致时不能自动迁移。"""
+    document = ArxmlDocument.load(arxml_factory(filename="wrong_group_add.arxml"))
+    index = document.build_index()
+    service = RoutingGroupMembershipService(document, index)
+    group_node = _group_node(document, "DefaultRoutingGroup")
+    destination_node = index.find_by_path(EXISTING_DESTINATION)[0]
+    expected = _GroupState("ExpectedApp", "/Cfg/PduR/ExpectedApp", group_node, ())
+    wrong = _GroupState(
+        "WrongOrDiagnosticGroup", "/Cfg/PduR/WrongOrDiagnosticGroup", group_node,
+        (_MemberEntry(destination_node, EXISTING_DESTINATION),),
+    )
+    monkeypatch.setattr(service, "_group_for_request", lambda request: (expected, ()))
+    monkeypatch.setattr(service, "_all_groups", lambda source: ((expected, wrong), ()))
+
+    plan = service.plan_add(RoutingGroupMembershipRequest(
+        "DST_CAN", "/Cfg/CanIf/CanIfInitCfg/TX2", EXISTING_DESTINATION,
+        SourceLocation("直接报文路由", 2),
+    ))
+    assert plan.operations == ()
+    assert "PDUR_ROUTING_GROUP_CHANNEL_MISMATCH" in {
+        problem.code for problem in plan.problems
     }
 
 

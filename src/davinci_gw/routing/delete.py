@@ -6,7 +6,6 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
-import re
 
 from lxml import etree
 
@@ -39,6 +38,11 @@ from .routing_group_membership import (
     RoutingGroupMembershipProblem,
     RoutingGroupMembershipRequest,
     RoutingGroupMembershipService,
+)
+from .direct_route_locator import (
+    DirectRouteSemanticLocator,
+    DirectSemanticState,
+    message_identity_matches as _message_identity_matches,
 )
 
 
@@ -189,27 +193,6 @@ def _subcontainers(node: etree._Element, namespace: str, definition: str) -> tup
         if group is not None else ()
 
 
-def _semantics_match(
-    node: etree._Element,
-    namespace: str,
-    parameters: dict[str, str],
-    references: dict[str, str],
-) -> bool:
-    actual_parameters, actual_references = semantic_values(node, namespace)
-    return all(actual_parameters.get(key) == (value,) for key, value in parameters.items()) and all(
-        actual_references.get(key) == (value,) for key, value in references.items()
-    )
-
-
-def _message_identity_matches(short_name: str | None, message_name: str) -> bool:
-    """按下划线分隔的完整报文名匹配，不依赖 GWT、GWH、Gw 等项目命名前缀。"""
-    if not short_name:
-        return False
-    return re.search(
-        rf"(?:^|_){re.escape(message_name)}(?=_|$)", short_name,
-    ) is not None
-
-
 def _node_operation(
     node: etree._Element,
     namespace: str,
@@ -252,8 +235,20 @@ class DeleteCoordinator:
         self.routing_groups = RoutingGroupMembershipService(
             document, self.index, reference_data=workbook.reference_data,
         )
+        self.direct_locator = DirectRouteSemanticLocator(
+            document,
+            self.index,
+            self.routing_groups,
+            source_module_ref=self.pdur.src_module_ref,
+            destination_module_ref=self.pdur.dest_module_ref,
+            lock_ref=self.pdur.lock_ref,
+        )
         self.com = ComEditor(document, self.index)
         self.references = {entry.channel_name: entry for entry in workbook.reference_data}
+        self.direct_add_replacements = {
+            route.key: route for route in workbook.direct_routes
+            if route.operation is OperationType.ADD
+        }
         self.operations: dict[tuple[object, ...], MutationOperation] = {}
         self.decisions: dict[tuple[str, str, str], RetentionDecision] = {}
         self.issues: list[ValidationIssue] = []
@@ -330,165 +325,78 @@ class DeleteCoordinator:
         return autosar_path(node, self.document.namespace)
 
     def _match_direct(self, route: DirectRouteChange) -> _DirectMatch | None:
-        key = route.key
         hrh_path = self._channel_path(route, source=True)
         buffer_path = self._channel_path(route, source=False)
         if hrh_path is None or buffer_path is None:
             return None
-
-        source_chains: dict[tuple[str, str, str], tuple[etree._Element, etree._Element, etree._Element]] = {}
-        source_semantic_candidates: list[str] = []
-        for canif_node in self.index.find_by_definition_ref(defs.CANIF_RX):
-            name = direct_child_text(canif_node, self.document.namespace, "SHORT-NAME")
-            parameters, refs = semantic_values(canif_node, self.document.namespace)
-            if (parameters.get(defs.CANIF_RX_CAN_ID) != (str(key.source_can_id),)
-                    or refs.get(defs.CANIF_RX_HRH_REF) != (hrh_path,)
-                    or len(refs.get(defs.CANIF_RX_PDU_REF, ())) != 1):
-                continue
-            source_semantic_candidates.append(autosar_path(canif_node, self.document.namespace))
-            if not _message_identity_matches(name, key.source_message_name):
-                continue
-            source_ecuc_path = refs[defs.CANIF_RX_PDU_REF][0]
-            ecuc_nodes = self.index.find_by_path(source_ecuc_path)
-            if len(ecuc_nodes) != 1 or definition_ref(ecuc_nodes[0], self.document.namespace) != defs.ECUC_PDU:
-                continue
-            for referrer in self.index.find_referrers(source_ecuc_path):
-                source_node = _container_owner(referrer)
-                if source_node is None or definition_ref(source_node, self.document.namespace) != defs.PDUR_SRC:
-                    continue
-                if not _semantics_match(
-                    source_node, self.document.namespace,
-                    {defs.PDUR_SRC_DIRECTION: "RECEIVE"},
-                    {defs.PDUR_SRC_PDU_REF: source_ecuc_path},
-                ):
-                    continue
-                subcontainers = source_node.getparent()
-                path_node = subcontainers.getparent() if subcontainers is not None else None
-                if path_node is None or definition_ref(path_node, self.document.namespace) != defs.PDUR_PATH:
-                    continue
-                source_chains[(
-                    autosar_path(canif_node, self.document.namespace),
-                    autosar_path(source_node, self.document.namespace),
-                    autosar_path(path_node, self.document.namespace),
-                )] = (canif_node, source_node, path_node)
-
-        target_chains: dict[tuple[str, str], tuple[etree._Element, str]] = {}
-        target_semantic_candidates: list[tuple[str, str]] = []
-        for canif_node in self.index.find_by_definition_ref(defs.CANIF_TX):
-            name = direct_child_text(canif_node, self.document.namespace, "SHORT-NAME")
-            parameters, refs = semantic_values(canif_node, self.document.namespace)
-            if (parameters.get(defs.CANIF_TX_CAN_ID) != (str(key.target_can_id),)
-                    or refs.get(defs.CANIF_TX_BUFFER_REF) != (buffer_path,)
-                    or len(refs.get(defs.CANIF_TX_PDU_REF, ())) != 1):
-                continue
-            target_semantic_candidates.append((
-                autosar_path(canif_node, self.document.namespace), refs[defs.CANIF_TX_PDU_REF][0],
-            ))
-            if not _message_identity_matches(name, key.target_message_name):
-                continue
-            target_ecuc_path = refs[defs.CANIF_TX_PDU_REF][0]
-            ecuc_nodes = self.index.find_by_path(target_ecuc_path)
-            if len(ecuc_nodes) != 1 or definition_ref(ecuc_nodes[0], self.document.namespace) != defs.ECUC_PDU:
-                continue
-            target_chains[(
-                autosar_path(canif_node, self.document.namespace), target_ecuc_path,
-            )] = (canif_node, target_ecuc_path)
-
-        if source_semantic_candidates and not source_chains:
-            self.issues.append(_issue(
-                self.workbook, route, "DIRECT_DELETE_SOURCE_SEMANTIC_CONFLICT",
-                f"源 CAN ID 0x{key.source_can_id:X} 与 HRH“{hrh_path}”命中对象"
-                f" {source_semantic_candidates}，但报文名“{key.source_message_name}”不匹配或"
-                " PduRSrcPdu 引用链不完整；为避免误删，本次阻断。",
-            ))
-            return None
-        if len(source_chains) > 1:
+        semantic = self.direct_locator.locate(
+            route, hrh_path=hrh_path, buffer_path=buffer_path,
+        )
+        replacement = self.direct_add_replacements.get(route.key)
+        if replacement is not None and not (
+            semantic.source.state is DirectSemanticState.FOUND
+            and semantic.leg.state is DirectSemanticState.FOUND
+        ):
+            # DELETE→ADD 同键替换在第二次执行时，基线已经是 ADD 行的新参数；
+            # 先尝试 DELETE 行的旧语义，失败后仅以同键 ADD 语义重新确认同一引用链。
+            replacement_semantic = self.direct_locator.locate(
+                replacement, hrh_path=hrh_path, buffer_path=buffer_path,
+            )
+            if (
+                replacement_semantic.source.state is DirectSemanticState.FOUND
+                and replacement_semantic.leg.state is DirectSemanticState.FOUND
+            ):
+                semantic = replacement_semantic
+        if semantic.source.state is DirectSemanticState.AMBIGUOUS:
             self.issues.append(_issue(
                 self.workbook, route, "DIRECT_DELETE_SOURCE_AMBIGUOUS",
-                f"按源报文名、CAN ID 0x{key.source_can_id:X}、通道“{key.source_channel}”"
-                f"找到 {len(source_chains)} 条 PduRSrcPdu 源链：{sorted(source_chains)}。",
+                f"源报文语义定位到多条完整源链：{list(semantic.source.candidates)}；"
+                f"{semantic.source.detail}",
             ))
             return None
-        if source_chains:
-            # 先锁定源 RoutingPath，再用其 DestPdu 的 EcuC 引用过滤目标；同名同 ID 的本地自发
-            # CanIfTxPdu 若不属于这条路径，不能成为 DELETE 候选，也不应制造虚假歧义。
-            path_node = next(iter(source_chains.values()))[2]
-            routed_target_pdus = {
-                target
-                for destination in _subcontainers(path_node, self.document.namespace, defs.PDUR_DEST)
-                for target in semantic_values(destination, self.document.namespace)[1].get(
-                    defs.PDUR_DEST_PDU_REF, (),
-                )
-            }
-            target_chains = {
-                identity: chain for identity, chain in target_chains.items()
-                if identity[1] in routed_target_pdus
-            }
-            target_semantic_candidates = [
-                identity for identity in target_semantic_candidates
-                if identity[1] in routed_target_pdus
-            ]
-        if target_semantic_candidates and not target_chains:
+        if semantic.source.state is DirectSemanticState.PARTIAL_CONFLICT:
             self.issues.append(_issue(
-                self.workbook, route, "DIRECT_DELETE_TARGET_SEMANTIC_CONFLICT",
-                f"该源 RoutingPath 下，目标 CAN ID 0x{key.target_can_id:X} 与 TxBuffer"
-                f"“{buffer_path}”命中对象 {target_semantic_candidates}，但报文名"
-                f"“{key.target_message_name}”不匹配；不能按幂等 DELETE 跳过。",
+                self.workbook, route, "DIRECT_DELETE_SOURCE_SEMANTIC_CONFLICT",
+                f"源报文存在不完整或参数不一致的候选：{list(semantic.source.candidates)}；"
+                f"{semantic.source.detail}",
             ))
             return None
-        if len(target_chains) > 1:
-            self.issues.append(_issue(
-                self.workbook, route, "DIRECT_DELETE_TARGET_AMBIGUOUS",
-                f"按目标报文名、CAN ID 0x{key.target_can_id:X}、通道“{key.target_channel}”"
-                f"找到 {len(target_chains)} 个目标 CanIf/EcuC 身份：{sorted(target_chains)}。",
-            ))
-            return None
-        if not source_chains or not target_chains:
+        if semantic.source.state is DirectSemanticState.MISSING:
             self.issues.append(_issue(
                 self.workbook, route, "DIRECT_DELETE_NOT_FOUND",
-                f"语义定位得到源链 {len(source_chains)} 条、目标身份 {len(target_chains)} 个；"
-                "相关路由腿已不存在，本条 DELETE 幂等跳过。",
+                "未定位到完整源链，相关路由腿已不存在，本条 DELETE 幂等跳过。",
                 warning=True,
             ))
             return None
-
-        (source_canif_path, source_pdur_path, path_path), (
-            source_canif, source_node, path_node,
-        ) = next(iter(source_chains.items()))
-        (target_canif_path, target_ecuc_path), (target_canif, _) = next(iter(target_chains.items()))
-        source_ecuc_path = semantic_values(source_canif, self.document.namespace)[1][defs.CANIF_RX_PDU_REF][0]
-        destinations = tuple(
-            node for node in _subcontainers(path_node, self.document.namespace, defs.PDUR_DEST)
-            if _message_identity_matches(
-                direct_child_text(node, self.document.namespace, "SHORT-NAME"),
-                key.target_message_name,
-            ) and _semantics_match(
-                node, self.document.namespace,
-                {defs.PDUR_DEST_DIRECTION: "TRANSMIT"},
-                {defs.PDUR_DEST_PDU_REF: target_ecuc_path},
-            )
-        )
-        if not destinations:
-            self.issues.append(_issue(
-                self.workbook, route, "DIRECT_DELETE_NOT_FOUND",
-                f"语义定位到 RoutingPath“{path_path}”，但其中不存在目标报文“"
-                f"{key.target_message_name}”/0x{key.target_can_id:X}/{key.target_channel} 的目标腿，"
-                "本条 DELETE 幂等跳过。",
-                warning=True,
-            ))
-            return None
-        if len(destinations) != 1:
-            paths = sorted(autosar_path(node, self.document.namespace) for node in destinations)
+        if semantic.leg.state is DirectSemanticState.AMBIGUOUS:
             self.issues.append(_issue(
                 self.workbook, route, "DIRECT_DELETE_DESTINATION_AMBIGUOUS",
-                f"RoutingPath“{path_path}”内找到 {len(destinations)} 个目标腿候选：{paths}。",
+                f"当前源 RoutingPath 下存在多个目标腿：{list(semantic.leg.candidates)}；"
+                f"{semantic.leg.detail}",
             ))
             return None
-        destination = destinations[0]
+        if semantic.leg.state is DirectSemanticState.PARTIAL_CONFLICT:
+            self.issues.append(_issue(
+                self.workbook, route, "DIRECT_DELETE_TARGET_SEMANTIC_CONFLICT",
+                f"当前源 RoutingPath 下的目标腿参数或模块引用冲突："
+                f"{list(semantic.leg.candidates)}；{semantic.leg.detail}",
+            ))
+            return None
+        if semantic.leg.state is DirectSemanticState.MISSING:
+            self.issues.append(_issue(
+                self.workbook, route, "DIRECT_DELETE_NOT_FOUND",
+                f"语义定位到源 RoutingPath“{semantic.source.chain.routing_path}”，但指定目标腿"
+                "已不存在；路径外同名自发端点不会作为删除候选，本条 DELETE 幂等跳过。",
+                warning=True,
+            ))
+            return None
+        assert semantic.source.chain is not None and semantic.leg.leg is not None
+        source = semantic.source.chain
+        leg = semantic.leg.leg
         return _DirectMatch(
-            route, path_path, autosar_path(destination, self.document.namespace),
-            source_pdur_path,
-            source_ecuc_path, source_canif_path, target_ecuc_path, target_canif_path,
+            route, source.routing_path, leg.destination_path,
+            source.source_pdu_path,
+            source.ecuc_path, source.canif_path, leg.target_ecuc_path, leg.target_canif_path,
         )
 
     def _plan_direct(self) -> tuple[int, int]:

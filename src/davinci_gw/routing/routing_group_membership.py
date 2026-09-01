@@ -441,7 +441,7 @@ class RoutingGroupMembershipService:
                 "PDUR_ROUTING_GROUP_NON_MAIN_MEMBER",
                 f"基线一致性警告：路由组“{state.name}”（{state.path}）的成员"
                 f"“{member.target_path}”实际落在非主通道“{channel}”，报文“{message or '<未命名>'}”"
-                f"、CAN ID {can_id_text}；该成员不会污染通道到主组的映射。",
+                f"、CAN ID {can_id_text}；该组主通道为“{main}”，该成员不会污染通道到主组的映射。",
                 SourceLocation(),
                 warning=True,
             ))
@@ -505,11 +505,17 @@ class RoutingGroupMembershipService:
 
     def groups_for_destination(self, destination_path: str) -> tuple[str, ...]:
         """严格查询 DestPdu 所属全部组；不支持或损坏的模型以异常显式阻断。"""
+        return tuple(name for name, _ in self.group_memberships_for_destination(destination_path))
+
+    def group_memberships_for_destination(
+        self, destination_path: str,
+    ) -> tuple[tuple[str, str], ...]:
+        """返回 DestPdu 的实际组名和完整路径，供语义定位及问题说明使用。"""
         states, problems = self._all_groups(SourceLocation())
         if problems:
             raise RoutingGroupModelError("；".join(problem.message for problem in problems))
         return tuple(sorted(
-            state.name for state in states
+            (state.name, state.path) for state in states
             if any(member.target_path == destination_path for member in state.members)
         ))
 
@@ -527,6 +533,25 @@ class RoutingGroupMembershipService:
         state, problems = self._group_for_request(request)
         if state is None or any(not problem.warning for problem in problems):
             return RoutingGroupMembershipPlan((), problems)
+        states, group_problems = self._all_groups(request.source)
+        current_problems = list(problems + self._for_destination(
+            group_problems, request.destination_path,
+        ))
+        actual = tuple(
+            candidate for candidate in states
+            if any(member.target_path == request.destination_path for member in candidate.members)
+        )
+        if request.destination_exists and actual and (
+            len(actual) != 1 or actual[0].path != state.path
+        ):
+            current_problems.append(self._problem(
+                "PDUR_ROUTING_GROUP_CHANNEL_MISMATCH",
+                f"目标 PduRDestPdu“{request.destination_path}”实际属于"
+                f" {[(item.name, item.path) for item in actual]}，但目标通道“{request.target_channel}”"
+                f"的主应用组为“{state.name}”（{state.path}）；工具不会自动迁移或纠正。",
+                request.source,
+            ))
+            return RoutingGroupMembershipPlan((), tuple(current_problems))
         matching = tuple(
             member for member in state.members if member.target_path == request.destination_path
         )
@@ -540,7 +565,7 @@ class RoutingGroupMembershipService:
             source_locations=(request.source,),
         ),)
         return RoutingGroupMembershipPlan(
-            operations, problems,
+            operations, tuple(current_problems),
         )
 
     def plan_delete(
