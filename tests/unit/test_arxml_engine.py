@@ -48,8 +48,9 @@ def test_definition_path_and_reverse_reference_indexes(arxml_factory: object) ->
     index = document.build_index()
     assert len(index.find_by_definition_ref("/MICROSAR/CanIf")) == 1
     assert len(index.find_by_path("/Cfg/CanIf")) == 1
-    assert len(index.find_referrers("/Cfg/CanIf")) == 4
-    assert index.reference_count("/Cfg/CanIf") == 4
+    # PduR BswModuleRef 现在也参与应用组/诊断组结构分类，因此多一个精确定义引用。
+    assert len(index.find_referrers("/Cfg/CanIf")) == 5
+    assert index.reference_count("/Cfg/CanIf") == 5
 
 
 def test_roundtrip_preserves_comment_unknown_and_attribute(

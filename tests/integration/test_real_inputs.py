@@ -13,13 +13,15 @@ from davinci_gw.application.facade import GatewayFacade
 from davinci_gw.application.generate import generate_inputs
 from davinci_gw.application.preview import preview_inputs
 from davinci_gw.application.validate import inspect_baseline
+from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.contracts import OperationStatus, UpdateRequestDto
-from tests.conftest import migrate_round07_workbook
+from davinci_gw.input.workbook_reader import read_workbook
+from davinci_gw.routing.routing_group_membership import RoutingGroupMembershipService
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "input" / "网关路由配置表_v4.84.xlsx"
-BASELINE = ROOT / "input" / "825E0GA.arxml"
+BASELINE = ROOT / "input" / "T13J.arxml"
 
 
 def fingerprint(path: Path) -> tuple[int, int, str]:
@@ -36,8 +38,7 @@ def make_add_only_copy(source: Path, target: Path) -> Path:
     """在 tmp_path 中删除 DELETE 数据行，不修改或另存真实输入。"""
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Data Validation extension is not supported.*")
-        migrated = migrate_round07_workbook(source, target)
-        workbook = load_workbook(migrated)
+        workbook = load_workbook(source)
     try:
         for sheet_name in ("直接报文路由", "信号路由"):
             sheet = workbook[sheet_name]
@@ -58,13 +59,35 @@ def make_add_only_copy(source: Path, target: Path) -> Path:
 def test_real_inputs_preview_and_full_transaction_generation(tmp_path: Path) -> None:
     baseline_before = fingerprint(BASELINE)
     config_before = fingerprint(CONFIG)
-    config = migrate_round07_workbook(CONFIG, tmp_path / "真实路由_round07_v4.84.xlsx")
-    preview = preview_inputs(config, BASELINE)
+    preview = preview_inputs(CONFIG, BASELINE)
     assert preview.is_valid, [issue.message for issue in preview.validation.issues]
     assert preview.target_version == "4.84"
     assert preview.reference_count == 12
     assert (preview.direct_add_count, preview.direct_delete_count) == (9, 1)
     assert (preview.signal_add_count, preview.signal_delete_count) == (2, 2)
+
+    workbook = read_workbook(CONFIG)
+    service = RoutingGroupMembershipService(
+        ArxmlDocument.load(BASELINE), reference_data=workbook.data.reference_data,
+    )
+    mapping, mapping_problems = service.application_group_mapping()
+    assert {channel: value[0] for channel, value in mapping.items()} == {
+        "BDCAN": "PduRRoutingPathGroup_BDCanApp",
+        "CHCAN": "PduRRoutingPathGroup_CHCanApp",
+        "DACAN": "PduRRoutingPathGroup_DACanApp",
+        "DKCAN": "PduRRoutingPathGroup_DKCanApp",
+        "DMCAN": "PduRRoutingPathGroup_DMCanApp",
+        "EPCAN": "PduRRoutingPathGroup_EPCanApp",
+        "GLCAN": "PduRRoutingPathGroup_GLCanApp",
+        "ICCAN": "PduRRoutingPathGroup_ICCanApp",
+        "LCCAN": "PduRRoutingPathGroup_LCCanApp",
+        "PTCAN": "PduRRoutingPathGroup_PTCanApp",
+        "SUCAN": "PduRRoutingPathGroup_SUCanApp",
+    }
+    assert "DGCAN" not in mapping
+    assert not [problem for problem in mapping_problems if not problem.warning]
+    warning_text = "\n".join(problem.message for problem in mapping_problems if problem.warning)
+    assert "FRZCU_6_DACAN" in warning_text and "BMS_2_G_50B_ICCAN" in warning_text
 
     inspection = inspect_baseline(BASELINE)
     assert inspection.namespace_uri == "http://autosar.org/schema/r4.0"
@@ -75,7 +98,7 @@ def test_real_inputs_preview_and_full_transaction_generation(tmp_path: Path) -> 
     }
     output = tmp_path / "real_full_transaction.arxml"
     facade = GatewayFacade()
-    prepared = facade.prepare(UpdateRequestDto(str(config), str(BASELINE)))
+    prepared = facade.prepare(UpdateRequestDto(str(CONFIG), str(BASELINE)))
     assert prepared.status is OperationStatus.SUCCESS, [issue.message for issue in prepared.issues]
     features = {item.feature_id: item for item in prepared.preview.features}
     direct = {item.key: item.value for item in features["direct_message"].metrics}
@@ -91,7 +114,7 @@ def test_real_inputs_preview_and_full_transaction_generation(tmp_path: Path) -> 
 
 @pytest.mark.slow
 @pytest.mark.skipif(not CONFIG.exists() or not BASELINE.exists(), reason="本地真实输入不存在")
-def test_real_add_only_generation_skips_missing_dbc_without_stopping(tmp_path: Path) -> None:
+def test_real_add_only_generation_processes_standard_routes(tmp_path: Path) -> None:
     before = fingerprint(BASELINE)
     add_only = make_add_only_copy(CONFIG, tmp_path / "真实路由_add_only_v4.84.xlsx")
     output = tmp_path / "real_generated.arxml"
@@ -99,7 +122,7 @@ def test_real_add_only_generation_skips_missing_dbc_without_stopping(tmp_path: P
     assert report.is_success, [issue.message for issue in report.all_issues]
     assert report.plan.direct_added_count + report.plan.direct_existing_count + report.plan.direct_skipped_count == 9
     assert report.plan.signal_added_count + report.plan.signal_existing_count + report.plan.signal_skipped_count == 2
-    assert report.plan.signal_skipped_count == 2
-    assert any("DBC" in issue.message or "ComIPdu" in issue.message for issue in report.warnings)
+    assert report.plan.signal_added_count + report.plan.signal_existing_count == 2
+    assert report.plan.signal_skipped_count == 0
     assert inspect_baseline(output).schema_filename == "AUTOSAR_00049.xsd"
     assert fingerprint(BASELINE) == before

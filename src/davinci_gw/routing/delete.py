@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from decimal import Decimal
+import re
 
 from lxml import etree
 
@@ -33,7 +34,6 @@ from davinci_gw.modules.common import definition_ref, semantic_values, unique_na
 from davinci_gw.modules.ecuc_editor import EcucEditor
 from davinci_gw.modules.pdur_editor import PduREditor
 
-from .naming import direct_source_name, direct_target_name, pdur_leg_name, pdur_path_name
 from .routing_group_membership import (
     RoutingGroupMembershipRequest,
     RoutingGroupMembershipService,
@@ -181,6 +181,15 @@ def _semantics_match(
     )
 
 
+def _message_identity_matches(short_name: str | None, message_name: str) -> bool:
+    """按下划线分隔的完整报文名匹配，不依赖 GWT、GWH、Gw 等项目命名前缀。"""
+    if not short_name:
+        return False
+    return re.search(
+        rf"(?:^|_){re.escape(message_name)}(?=_|$)", short_name,
+    ) is not None
+
+
 def _node_operation(
     node: etree._Element,
     namespace: str,
@@ -220,7 +229,9 @@ class DeleteCoordinator:
         self.ecuc = EcucEditor(document, self.index)
         self.canif = CanIfEditor(document, self.index)
         self.pdur = PduREditor(document, self.index)
-        self.routing_groups = RoutingGroupMembershipService(document, self.index)
+        self.routing_groups = RoutingGroupMembershipService(
+            document, self.index, reference_data=workbook.reference_data,
+        )
         self.com = ComEditor(document, self.index)
         self.references = {entry.channel_name: entry for entry in workbook.reference_data}
         self.operations: dict[tuple[object, ...], MutationOperation] = {}
@@ -300,110 +311,163 @@ class DeleteCoordinator:
 
     def _match_direct(self, route: DirectRouteChange) -> _DirectMatch | None:
         key = route.key
-        source_name = direct_source_name(key.source_message_name, key.source_channel)
-        target_name = direct_target_name(key.target_message_name, key.target_channel)
-        path_name = pdur_path_name(key.source_message_name, key.source_can_id, key.source_channel)
-        destination_name = pdur_leg_name(key.target_message_name, key.target_can_id, key.target_channel)
-        path_path = f"{self.pdur.path_parent}/{path_name}"
-        found_paths = self.index.find_by_path(path_path)
-        if not found_paths:
-            self.issues.append(_issue(
-                self.workbook, route, "DIRECT_DELETE_NOT_FOUND",
-                f"PduR 路径“{path_path}”已不存在，本条 DELETE 幂等跳过。", warning=True,
-            ))
-            return None
-        if len(found_paths) != 1 or definition_ref(found_paths[0], self.document.namespace) != defs.PDUR_PATH:
-            self.issues.append(_issue(
-                self.workbook, route, "DIRECT_DELETE_PATH_AMBIGUOUS",
-                f"PduR 路径“{path_path}”实际候选数为{len(found_paths)}，无法唯一定位。"
-                "请清理重复对象后重试。",
-            ))
-            return None
-        path_node = found_paths[0]
-        source_ecuc_path = f"{self.ecuc.parent_path}/{source_name}"
-        target_ecuc_path = f"{self.ecuc.parent_path}/{target_name}"
-        source_canif_path = f"{self.canif.rx_parent_path}/{source_name}"
-        target_canif_path = f"{self.canif.tx_parent_path}/{target_name}"
-
-        destinations = _subcontainers(path_node, self.document.namespace, defs.PDUR_DEST)
-        by_name = tuple(node for node in destinations
-                        if direct_child_text(node, self.document.namespace, "SHORT-NAME") == destination_name)
-        by_reference = tuple(node for node in destinations
-                             if semantic_values(node, self.document.namespace)[1].get(defs.PDUR_DEST_PDU_REF)
-                             == (target_ecuc_path,))
-        if not by_name and not by_reference:
-            self.issues.append(_issue(
-                self.workbook, route, "DIRECT_DELETE_NOT_FOUND",
-                f"RoutingPath“{path_path}”内的目标腿已不存在，本条 DELETE 幂等跳过。",
-                warning=True,
-            ))
-            return None
-        if len(by_name) != 1 or len(by_reference) != 1 or by_name[0] is not by_reference[0]:
-            self.issues.append(_issue(
-                self.workbook, route, "DIRECT_DELETE_DESTINATION_AMBIGUOUS",
-                f"目标腿名称候选数为{len(by_name)}、目标 PDU 引用候选数为{len(by_reference)}，"
-                f"无法证明“{destination_name}”唯一对应“{target_ecuc_path}”。请修复后重试。",
-            ))
-            return None
-        destination = by_name[0]
-        sources = _subcontainers(path_node, self.document.namespace, defs.PDUR_SRC)
-        source_candidates = tuple(node for node in sources
-                                  if semantic_values(node, self.document.namespace)[1].get(defs.PDUR_SRC_PDU_REF)
-                                  == (source_ecuc_path,))
-        if len(sources) != 1 or len(source_candidates) != 1:
-            self.issues.append(_issue(
-                self.workbook, route, "DIRECT_DELETE_SOURCE_AMBIGUOUS",
-                f"RoutingPath“{path_path}”的 SrcPdu 总数为{len(sources)}、匹配源引用候选数为"
-                f"{len(source_candidates)}。请修复源链后重试。",
-            ))
-            return None
-
         hrh_path = self._channel_path(route, source=True)
         buffer_path = self._channel_path(route, source=False)
         if hrh_path is None or buffer_path is None:
             return None
-        source_ecuc = self._unique_path(source_ecuc_path, defs.ECUC_PDU, route, "源 EcuC PDU")
-        target_ecuc = self._unique_path(target_ecuc_path, defs.ECUC_PDU, route, "目标 EcuC PDU")
-        source_canif = self._unique_path(source_canif_path, defs.CANIF_RX, route, "源 CanIf Rx PDU")
-        target_canif = self._unique_path(target_canif_path, defs.CANIF_TX, route, "目标 CanIf Tx PDU")
-        if any(node is None for node in (source_ecuc, target_ecuc, source_canif, target_canif)):
-            return None
-        assert source_canif is not None and target_canif is not None
-        if not _semantics_match(
-            source_canif, self.document.namespace, {defs.CANIF_RX_CAN_ID: str(key.source_can_id)},
-            {defs.CANIF_RX_PDU_REF: source_ecuc_path, defs.CANIF_RX_HRH_REF: hrh_path},
-        ):
+
+        source_chains: dict[tuple[str, str, str], tuple[etree._Element, etree._Element, etree._Element]] = {}
+        source_semantic_candidates: list[str] = []
+        for canif_node in self.index.find_by_definition_ref(defs.CANIF_RX):
+            name = direct_child_text(canif_node, self.document.namespace, "SHORT-NAME")
+            parameters, refs = semantic_values(canif_node, self.document.namespace)
+            if (parameters.get(defs.CANIF_RX_CAN_ID) != (str(key.source_can_id),)
+                    or refs.get(defs.CANIF_RX_HRH_REF) != (hrh_path,)
+                    or len(refs.get(defs.CANIF_RX_PDU_REF, ())) != 1):
+                continue
+            source_semantic_candidates.append(autosar_path(canif_node, self.document.namespace))
+            if not _message_identity_matches(name, key.source_message_name):
+                continue
+            source_ecuc_path = refs[defs.CANIF_RX_PDU_REF][0]
+            ecuc_nodes = self.index.find_by_path(source_ecuc_path)
+            if len(ecuc_nodes) != 1 or definition_ref(ecuc_nodes[0], self.document.namespace) != defs.ECUC_PDU:
+                continue
+            for referrer in self.index.find_referrers(source_ecuc_path):
+                source_node = _container_owner(referrer)
+                if source_node is None or definition_ref(source_node, self.document.namespace) != defs.PDUR_SRC:
+                    continue
+                if not _semantics_match(
+                    source_node, self.document.namespace,
+                    {defs.PDUR_SRC_DIRECTION: "RECEIVE"},
+                    {defs.PDUR_SRC_PDU_REF: source_ecuc_path},
+                ):
+                    continue
+                subcontainers = source_node.getparent()
+                path_node = subcontainers.getparent() if subcontainers is not None else None
+                if path_node is None or definition_ref(path_node, self.document.namespace) != defs.PDUR_PATH:
+                    continue
+                source_chains[(
+                    autosar_path(canif_node, self.document.namespace),
+                    autosar_path(source_node, self.document.namespace),
+                    autosar_path(path_node, self.document.namespace),
+                )] = (canif_node, source_node, path_node)
+
+        target_chains: dict[tuple[str, str], tuple[etree._Element, str]] = {}
+        target_semantic_candidates: list[tuple[str, str]] = []
+        for canif_node in self.index.find_by_definition_ref(defs.CANIF_TX):
+            name = direct_child_text(canif_node, self.document.namespace, "SHORT-NAME")
+            parameters, refs = semantic_values(canif_node, self.document.namespace)
+            if (parameters.get(defs.CANIF_TX_CAN_ID) != (str(key.target_can_id),)
+                    or refs.get(defs.CANIF_TX_BUFFER_REF) != (buffer_path,)
+                    or len(refs.get(defs.CANIF_TX_PDU_REF, ())) != 1):
+                continue
+            target_semantic_candidates.append((
+                autosar_path(canif_node, self.document.namespace), refs[defs.CANIF_TX_PDU_REF][0],
+            ))
+            if not _message_identity_matches(name, key.target_message_name):
+                continue
+            target_ecuc_path = refs[defs.CANIF_TX_PDU_REF][0]
+            ecuc_nodes = self.index.find_by_path(target_ecuc_path)
+            if len(ecuc_nodes) != 1 or definition_ref(ecuc_nodes[0], self.document.namespace) != defs.ECUC_PDU:
+                continue
+            target_chains[(
+                autosar_path(canif_node, self.document.namespace), target_ecuc_path,
+            )] = (canif_node, target_ecuc_path)
+
+        if source_semantic_candidates and not source_chains:
             self.issues.append(_issue(
                 self.workbook, route, "DIRECT_DELETE_SOURCE_SEMANTIC_CONFLICT",
-                f"源 CanIf 对象“{source_canif_path}”的 CAN ID、PDU 或 HRH 引用与 DELETE 身份不一致。"
-                "为避免误删人工配置，本次阻止输出。",
+                f"源 CAN ID 0x{key.source_can_id:X} 与 HRH“{hrh_path}”命中对象"
+                f" {source_semantic_candidates}，但报文名“{key.source_message_name}”不匹配或"
+                " PduRSrcPdu 引用链不完整；为避免误删，本次阻断。",
             ))
             return None
-        if not _semantics_match(
-            target_canif, self.document.namespace, {defs.CANIF_TX_CAN_ID: str(key.target_can_id)},
-            {defs.CANIF_TX_PDU_REF: target_ecuc_path, defs.CANIF_TX_BUFFER_REF: buffer_path},
-        ):
+        if len(source_chains) > 1:
+            self.issues.append(_issue(
+                self.workbook, route, "DIRECT_DELETE_SOURCE_AMBIGUOUS",
+                f"按源报文名、CAN ID 0x{key.source_can_id:X}、通道“{key.source_channel}”"
+                f"找到 {len(source_chains)} 条 PduRSrcPdu 源链：{sorted(source_chains)}。",
+            ))
+            return None
+        if source_chains:
+            # 先锁定源 RoutingPath，再用其 DestPdu 的 EcuC 引用过滤目标；同名同 ID 的本地自发
+            # CanIfTxPdu 若不属于这条路径，不能成为 DELETE 候选，也不应制造虚假歧义。
+            path_node = next(iter(source_chains.values()))[2]
+            routed_target_pdus = {
+                target
+                for destination in _subcontainers(path_node, self.document.namespace, defs.PDUR_DEST)
+                for target in semantic_values(destination, self.document.namespace)[1].get(
+                    defs.PDUR_DEST_PDU_REF, (),
+                )
+            }
+            target_chains = {
+                identity: chain for identity, chain in target_chains.items()
+                if identity[1] in routed_target_pdus
+            }
+            target_semantic_candidates = [
+                identity for identity in target_semantic_candidates
+                if identity[1] in routed_target_pdus
+            ]
+        if target_semantic_candidates and not target_chains:
             self.issues.append(_issue(
                 self.workbook, route, "DIRECT_DELETE_TARGET_SEMANTIC_CONFLICT",
-                f"目标 CanIf 对象“{target_canif_path}”的 CAN ID、PDU 或 TxBuffer 引用与 DELETE 身份不一致。"
-                "请核对配置后重试。",
+                f"该源 RoutingPath 下，目标 CAN ID 0x{key.target_can_id:X} 与 TxBuffer"
+                f"“{buffer_path}”命中对象 {target_semantic_candidates}，但报文名"
+                f"“{key.target_message_name}”不匹配；不能按幂等 DELETE 跳过。",
             ))
             return None
-        if not _semantics_match(
-            source_candidates[0], self.document.namespace,
-            {defs.PDUR_SRC_DIRECTION: "RECEIVE"}, {defs.PDUR_SRC_PDU_REF: source_ecuc_path},
-        ) or not _semantics_match(
-            destination, self.document.namespace,
-            {defs.PDUR_DEST_DIRECTION: "TRANSMIT"}, {defs.PDUR_DEST_PDU_REF: target_ecuc_path},
-        ):
+        if len(target_chains) > 1:
             self.issues.append(_issue(
-                self.workbook, route, "DIRECT_DELETE_PDUR_SEMANTIC_CONFLICT",
-                f"PduR 路径“{path_path}”的方向或 PDU 引用与 DELETE 身份不一致。请人工修复后重试。",
+                self.workbook, route, "DIRECT_DELETE_TARGET_AMBIGUOUS",
+                f"按目标报文名、CAN ID 0x{key.target_can_id:X}、通道“{key.target_channel}”"
+                f"找到 {len(target_chains)} 个目标 CanIf/EcuC 身份：{sorted(target_chains)}。",
             ))
             return None
+        if not source_chains or not target_chains:
+            self.issues.append(_issue(
+                self.workbook, route, "DIRECT_DELETE_NOT_FOUND",
+                f"语义定位得到源链 {len(source_chains)} 条、目标身份 {len(target_chains)} 个；"
+                "相关路由腿已不存在，本条 DELETE 幂等跳过。",
+                warning=True,
+            ))
+            return None
+
+        (source_canif_path, source_pdur_path, path_path), (
+            source_canif, source_node, path_node,
+        ) = next(iter(source_chains.items()))
+        (target_canif_path, target_ecuc_path), (target_canif, _) = next(iter(target_chains.items()))
+        source_ecuc_path = semantic_values(source_canif, self.document.namespace)[1][defs.CANIF_RX_PDU_REF][0]
+        destinations = tuple(
+            node for node in _subcontainers(path_node, self.document.namespace, defs.PDUR_DEST)
+            if _message_identity_matches(
+                direct_child_text(node, self.document.namespace, "SHORT-NAME"),
+                key.target_message_name,
+            ) and _semantics_match(
+                node, self.document.namespace,
+                {defs.PDUR_DEST_DIRECTION: "TRANSMIT"},
+                {defs.PDUR_DEST_PDU_REF: target_ecuc_path},
+            )
+        )
+        if not destinations:
+            self.issues.append(_issue(
+                self.workbook, route, "DIRECT_DELETE_NOT_FOUND",
+                f"语义定位到 RoutingPath“{path_path}”，但其中不存在目标报文“"
+                f"{key.target_message_name}”/0x{key.target_can_id:X}/{key.target_channel} 的目标腿，"
+                "本条 DELETE 幂等跳过。",
+                warning=True,
+            ))
+            return None
+        if len(destinations) != 1:
+            paths = sorted(autosar_path(node, self.document.namespace) for node in destinations)
+            self.issues.append(_issue(
+                self.workbook, route, "DIRECT_DELETE_DESTINATION_AMBIGUOUS",
+                f"RoutingPath“{path_path}”内找到 {len(destinations)} 个目标腿候选：{paths}。",
+            ))
+            return None
+        destination = destinations[0]
         return _DirectMatch(
             route, path_path, autosar_path(destination, self.document.namespace),
-            autosar_path(source_candidates[0], self.document.namespace),
+            source_pdur_path,
             source_ecuc_path, source_canif_path, target_ecuc_path, target_canif_path,
         )
 
@@ -425,27 +489,33 @@ class DeleteCoordinator:
         if len([issue for issue in self.issues if issue.severity is ValidationSeverity.ERROR]) > before_errors:
             return len(matches), missing
 
-        matches_by_source = {match.route.source: match for match in matches}
-        membership = self.routing_groups.plan_delete(tuple(
-            RoutingGroupMembershipRequest(
-                route.routing_group_names,
-                (
-                    f"{self.pdur.path_parent}/"
-                    f"{pdur_path_name(route.key.source_message_name, route.key.source_can_id, route.key.source_channel)}/"
-                    f"{pdur_leg_name(route.key.target_message_name, route.key.target_can_id, route.key.target_channel)}"
-                ),
-                route.source,
-                destination_exists=route.source in matches_by_source,
-            )
-            for route in routes
-        ))
+        if not matches and routes:
+            _, index_problems = self.routing_groups.application_group_mapping(routes[0].source)
+            for problem in index_problems:
+                self.issues.append(_issue(
+                    self.workbook, routes[0], problem.code, problem.message,
+                    warning=problem.warning,
+                ))
+            return len(matches), missing
+
+        requests: list[RoutingGroupMembershipRequest] = []
+        for match in matches:
+            buffer_path = self._channel_path(match.route, source=False)
+            if buffer_path is not None:
+                requests.append(RoutingGroupMembershipRequest(
+                    match.route.key.target_channel,
+                    buffer_path,
+                    match.destination_path,
+                    match.route.source,
+                ))
+        membership = self.routing_groups.plan_delete(tuple(requests))
         routes_by_source = {route.source: route for route in routes}
         for problem in membership.problems:
             route = routes_by_source[problem.source]
             self.issues.append(_issue(
-                self.workbook, route, problem.code, problem.message,
+                self.workbook, route, problem.code, problem.message, warning=problem.warning,
             ))
-        if membership.problems:
+        if any(not problem.warning for problem in membership.problems):
             return len(matches), missing
         removed_group_referrers = self.routing_groups.removal_referrers(membership.operations)
 

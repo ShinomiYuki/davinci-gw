@@ -97,7 +97,6 @@ class DirectRouteChange:
     target_truncation_enabled: str | None
     length_strategy: str | None
     source: SourceLocation
-    routing_group_names: tuple[str, ...] = ()
 
     @property
     def source_can_id_text(self) -> str:

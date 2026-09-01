@@ -51,9 +51,15 @@ def _issue(
 ) -> ValidationIssue:
     location = route.source
     row = f"第{location.row_number}行" if location.row_number else ""
+    key = route.key
+    identity = (
+        f"{key.source_message_name}/0x{key.source_can_id:X}/{key.source_channel} → "
+        f"{key.target_message_name}/0x{key.target_can_id:X}/{key.target_channel}"
+    )
     return ValidationIssue(
         code=code,
-        message=(f"配置表“{workbook.path}”的“{location.sheet_name}”工作表{row}，{detail}"),
+        message=(f"配置表“{workbook.path}”的“{location.sheet_name}”工作表{row}，"
+                 f"路由“{identity}”：{detail}"),
         severity=ValidationSeverity.WARNING if warning else ValidationSeverity.ERROR,
         file_path=workbook.path,
         location=location,
@@ -281,13 +287,15 @@ class DirectRoutePlanner:
                 )
                 if all(state == "MISSING" for state in target_states):
                     membership = self.routing_groups.plan_add(RoutingGroupMembershipRequest(
-                        target.routing_group_names, dest_probe.object_path, target.source,
+                        target.key.target_channel, buffer_path or "", dest_probe.object_path,
+                        target.source,
                         destination_exists=False,
                     ))
-                    if membership.problems:
-                        issues.extend(_issue(
-                            self.workbook, target, problem.code, problem.message, warning=False,
-                        ) for problem in membership.problems)
+                    issues.extend(_issue(
+                        self.workbook, target, problem.code, problem.message,
+                        warning=problem.warning,
+                    ) for problem in membership.problems)
+                    if any(not problem.warning for problem in membership.problems):
                         continue
                     group_operations.extend((
                         ecuc_target,
@@ -305,12 +313,14 @@ class DirectRoutePlanner:
                     group_added += 1
                 elif all(state == "EXISTING" for state in target_states):
                     membership = self.routing_groups.plan_add(RoutingGroupMembershipRequest(
-                        target.routing_group_names, dest_probe.object_path, target.source,
+                        target.key.target_channel, buffer_path or "", dest_probe.object_path,
+                        target.source,
                     ))
-                    if membership.problems:
-                        issues.extend(_issue(
-                            self.workbook, target, problem.code, problem.message, warning=False,
-                        ) for problem in membership.problems)
+                    issues.extend(_issue(
+                        self.workbook, target, problem.code, problem.message,
+                        warning=problem.warning,
+                    ) for problem in membership.problems)
+                    if any(not problem.warning for problem in membership.problems):
                         continue
                     group_operations.extend(membership.operations)
                     existing += 1

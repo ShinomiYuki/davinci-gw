@@ -49,7 +49,6 @@ def _members(path: Path, group_name: str) -> tuple[str, ...]:
 
 def _generate_add(
     workbook_factory, arxml_factory, tmp_path: Path, *,
-    group_text: str = "DefaultRoutingGroup",
     routing_groups: dict[str, tuple[str, ...]] | None = None,
     name: str = "routing_group_add",
 ) -> Path:
@@ -57,7 +56,7 @@ def _generate_add(
     report = generate_inputs(
         workbook_factory(
             filename=f"{name}_v4.84.xlsx",
-            direct_rows=(direct_row(**{"PduR路由组": group_text}),),
+            direct_rows=(direct_row(),),
             signal_rows=(),
         ),
         arxml_factory(filename=f"{name}_base.arxml", routing_groups=routing_groups),
@@ -82,36 +81,20 @@ def test_single_group_add_and_adapter_recognition(
     assert parameters[defs.PDUR_ROUTING_GROUP_ID] == ("1",)
 
 
-def test_multi_group_add_and_duplicate_add_are_idempotent(
+def test_two_groups_with_same_main_channel_block_add(
     workbook_factory, arxml_factory, tmp_path: Path,
 ) -> None:
     groups = {
         "DefaultRoutingGroup": (EXISTING_DESTINATION,),
         "AuxRoutingGroup": (EXISTING_DESTINATION,),
     }
-    first = _generate_add(
-        workbook_factory, arxml_factory, tmp_path,
-        group_text="DefaultRoutingGroup; AuxRoutingGroup", routing_groups=groups,
-        name="multi_group_add",
-    )
-    for name in groups:
-        assert _members(first, name).count(DESTINATION) == 1
-    second = tmp_path / "multi_group_add_second.arxml"
     report = generate_inputs(
-        workbook_factory(
-            filename="multi_group_add_second_v4.84.xlsx",
-            direct_rows=(direct_row(**{
-                "PduR路由组": "DefaultRoutingGroup;AuxRoutingGroup",
-            }),), signal_rows=(),
-        ),
-        first,
-        second,
+        workbook_factory(filename="ambiguous_main_v4.84.xlsx", signal_rows=()),
+        arxml_factory(filename="ambiguous_main.arxml", routing_groups=groups),
+        tmp_path / "ambiguous_main_output.arxml",
     )
-    assert report.is_success, _messages(report)
-    assert not any(
-        operation.action is MutationAction.ADD_REFERENCE for operation in report.plan.operations
-    )
-    assert first.read_bytes() == second.read_bytes()
+    assert not report.is_success
+    assert "PDUR_ROUTING_GROUP_CHANNEL_AMBIGUOUS" in {issue.code for issue in report.errors}
 
 
 def test_existing_route_add_repairs_missing_membership_but_delete_blocks(
@@ -177,37 +160,24 @@ def test_single_group_delete_removes_reference_before_destination(
     assert not ArxmlDocument.load(output).build_index().find_by_path(DESTINATION)
 
 
-def test_multi_group_delete_and_repeated_delete_are_idempotent(
+def test_two_groups_with_same_main_channel_block_delete(
     workbook_factory, arxml_factory, tmp_path: Path,
 ) -> None:
     groups = {
         "DefaultRoutingGroup": (EXISTING_DESTINATION,),
         "AuxRoutingGroup": (EXISTING_DESTINATION,),
     }
-    baseline = _generate_add(
-        workbook_factory, arxml_factory, tmp_path,
-        group_text="DefaultRoutingGroup;AuxRoutingGroup", routing_groups=groups,
-        name="multi_delete_base",
-    )
+    baseline = arxml_factory(filename="multi_delete_base.arxml", routing_groups=groups)
     delete_config = workbook_factory(
         filename="multi_delete_v4.84.xlsx",
-        direct_rows=(direct_row(**{
-            "操作类型": "DELETE",
-            "PduR路由组": "DefaultRoutingGroup;AuxRoutingGroup",
-        }),), signal_rows=(),
+        direct_rows=(direct_row(**{"操作类型": "DELETE"}),), signal_rows=(),
     )
     first = tmp_path / "multi_delete_first.arxml"
     first_report = generate_inputs(delete_config, baseline, first)
-    assert first_report.is_success, _messages(first_report)
-    assert all(DESTINATION not in _members(first, name) for name in groups)
-    second = tmp_path / "multi_delete_second.arxml"
-    second_report = generate_inputs(delete_config, first, second)
-    assert second_report.is_success, _messages(second_report)
-    assert not any(
-        operation.action is MutationAction.REMOVE_REFERENCE
-        for operation in second_report.plan.operations
-    )
-    assert first.read_bytes() == second.read_bytes()
+    assert not first_report.is_success
+    assert "PDUR_ROUTING_GROUP_CHANNEL_AMBIGUOUS" in {
+        issue.code for issue in first_report.errors
+    }
 
 
 def test_missing_and_ambiguous_group_block_output(
@@ -217,11 +187,11 @@ def test_missing_and_ambiguous_group_block_output(
     missing = generate_inputs(
         workbook_factory(
             filename="missing_group_v4.84.xlsx",
-            direct_rows=(direct_row(**{"PduR路由组": "MissingGroup"}),), signal_rows=(),
-        ), arxml_factory(), missing_output,
+            direct_rows=(direct_row(),), signal_rows=(),
+        ), arxml_factory(routing_groups={}), missing_output,
     )
     assert not missing.is_success and not missing_output.exists()
-    assert "PDUR_ROUTING_GROUP_NOT_FOUND" in {issue.code for issue in missing.errors}
+    assert "PDUR_APPLICATION_ROUTING_GROUP_NOT_FOUND" in {issue.code for issue in missing.errors}
     assert DESTINATION in _messages(missing) and "第2行" in _messages(missing)
 
     duplicate_baseline = arxml_factory(filename="ambiguous_group_base.arxml")
@@ -244,46 +214,42 @@ def test_missing_and_ambiguous_group_block_output(
     assert "PDUR_ROUTING_GROUP_AMBIGUOUS" in {issue.code for issue in ambiguous.errors}
 
 
-def test_undeclared_existing_group_membership_blocks_delete(
+def test_multiple_existing_group_membership_blocks_delete(
     workbook_factory, arxml_factory, tmp_path: Path,
 ) -> None:
     groups = {
         "DefaultRoutingGroup": (EXISTING_DESTINATION,),
         "AuxRoutingGroup": (EXISTING_DESTINATION,),
     }
-    baseline = _generate_add(
-        workbook_factory, arxml_factory, tmp_path,
-        group_text="DefaultRoutingGroup;AuxRoutingGroup", routing_groups=groups,
-        name="undeclared_base",
-    )
+    baseline = arxml_factory(filename="multiple_membership_base.arxml", routing_groups=groups)
     output = tmp_path / "undeclared_delete.arxml"
     report = generate_inputs(
         workbook_factory(
             filename="undeclared_delete_v4.84.xlsx",
-            direct_rows=(direct_row(**{
-                "操作类型": "DELETE", "PduR路由组": "DefaultRoutingGroup",
-            }),), signal_rows=(),
+            direct_rows=(direct_row(**{"操作类型": "DELETE"}),), signal_rows=(),
         ), baseline, output,
     )
     assert not report.is_success and not output.exists()
-    assert "PDUR_ROUTING_GROUP_UNDECLARED_MEMBERSHIP" in {issue.code for issue in report.errors}
-    assert "AuxRoutingGroup" in _messages(report) and DESTINATION in _messages(report)
+    assert "PDUR_ROUTING_GROUP_CHANNEL_AMBIGUOUS" in {issue.code for issue in report.errors}
 
 
 def test_delete_last_member_blocks_empty_group(
     workbook_factory, arxml_factory, tmp_path: Path,
 ) -> None:
-    baseline = _generate_add(
-        workbook_factory, arxml_factory, tmp_path,
-        group_text="SoloGroup", routing_groups={"SoloGroup": ()}, name="empty_group_base",
-    )
+    baseline = _generate_add(workbook_factory, arxml_factory, tmp_path, name="empty_group_base")
+    tree = etree.parse(str(baseline))
+    namespace = etree.QName(tree.getroot()).namespace
+    group = next(node for node in tree.getroot().iter()
+                 if definition_ref(node, namespace) == defs.PDUR_ROUTING_GROUP)
+    values = group.find(f"{{{namespace}}}REFERENCE-VALUES")
+    values.remove(next(entry for entry in values
+                       if entry.find(f"{{{namespace}}}VALUE-REF").text == EXISTING_DESTINATION))
+    tree.write(str(baseline), encoding="UTF-8", xml_declaration=True)
     output = tmp_path / "empty_group_delete.arxml"
     report = generate_inputs(
         workbook_factory(
             filename="empty_group_delete_v4.84.xlsx",
-            direct_rows=(direct_row(**{
-                "操作类型": "DELETE", "PduR路由组": "SoloGroup",
-            }),), signal_rows=(),
+            direct_rows=(direct_row(**{"操作类型": "DELETE"}),), signal_rows=(),
         ), baseline, output,
     )
     assert not report.is_success and not output.exists()
@@ -340,7 +306,7 @@ def test_same_name_with_other_group_definition_is_explicitly_unsupported(
         baseline, output,
     )
     assert not report.is_success and not output.exists()
-    assert "PDUR_ROUTING_GROUP_MODEL_UNSUPPORTED" in {
+    assert "PDUR_APPLICATION_ROUTING_GROUP_NOT_FOUND" in {
         issue.code for issue in report.errors
     }
 

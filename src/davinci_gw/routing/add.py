@@ -58,7 +58,9 @@ class AddCoordinator:
         self.ecuc = EcucEditor(document, self.index)
         self.canif = CanIfEditor(document, self.index)
         self.pdur = PduREditor(document, self.index)
-        self.routing_groups = RoutingGroupMembershipService(document, self.index)
+        self.routing_groups = RoutingGroupMembershipService(
+            document, self.index, reference_data=workbook.reference_data,
+        )
         self.com = ComEditor(document, self.index)
         self.handlers = handler_registry or MutationHandlerRegistry((
             MutationHandler("ecuc", frozenset({MutationKind.ECUC_PDU}), 10, self.ecuc.apply),

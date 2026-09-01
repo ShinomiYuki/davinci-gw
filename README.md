@@ -7,7 +7,7 @@
 - 校验配置表版本、工作表、字段、重复和替换对。
 - 检查 ARXML 的 AUTOSAR Schema 以及 CanIf、Com、EcuC、PduR 四个必要模块。
 - 新增或安全删除直接 CAN 报文路由和 Com 信号路由。
-- 按配置表明确填写的组名，增量维护直接报文目标腿与既有 PduR RoutingGroup 的成员引用。
+- 根据目标 CAN 通道和基准 ARXML 的真实引用，自动维护直接报文目标腿与既有 PduR RoutingGroup 的成员引用。
 - 支持同一源端的一对多，只删除指定目标腿。
 - 允许同一路由键各有一条 `DELETE` 和 `ADD`，以“先删后增”修改参数。
 - 保护共享 CanIf/EcuC/PduR/Com 对象、HRH、TxBuffer 和无法确认归属的人工配置。
@@ -18,7 +18,7 @@
 
 ## Windows 桌面版
 
-第06轮提供 `davinci-gw-gui.exe` 免安装桌面程序。普通用户解压 ZIP 后直接双击 EXE，不需要安装 Python，也不需要配置 PATH。界面按“选择配置表 → 选择基准 ARXML → 预览 → 生成”工作：预览成功后复用同一份内存事务生成，不会再次解析约 81 MB 的基准文件。
+第06轮提供 `davinci-gw-gui.exe` 免安装桌面程序。普通用户解压 ZIP 后直接双击 EXE，不需要安装 Python，也不需要配置 PATH。界面按“选择配置表 → 选择基准 ARXML → 预览 → 生成”工作：预览成功后复用同一份内存事务生成，不会再次解析大型基准文件。
 
 界面支持浏览与拖放、自动建议不重名输出、动态路由统计、问题搜索/筛选/复制、协作式取消和安全关闭。输入文件始终只读，输出不能指向基准，也默认拒绝覆盖已有文件。运行日志位于 `%LOCALAPPDATA%\DaVinciGW\logs\gui.log`，只记录阶段、耗时、状态和异常类型，不记录 Excel/XML 内容。
 
@@ -50,13 +50,13 @@ from davinci_gw.contracts import UpdateRequestDto
 facade = GatewayFacade()
 request = UpdateRequestDto(
     config_path=r"input\网关路由配置表_v4.84.xlsx",
-    baseline_path=r"input\825E0GA.arxml",
+    baseline_path=r"input\T13J.arxml",
 )
 prepared = facade.preview(request)
 if prepared.session_id:
     result = facade.commit_prepared(
         prepared.session_id,
-        r"output\825E0GA_v4.84.arxml",
+        r"output\T13J_v4.84.arxml",
     )
 ```
 
@@ -74,13 +74,10 @@ Prepared Session 只存在于当前进程：默认有效期 15 分钟、最多�
 2. 旧版工程导出的完整 ARXML，且包含 CanIf、Com、EcuC、PduR。
 3. 一个与基准文件不同的输出路径。
 
-直接报文路由的每条 `ADD`/`DELETE` 还必须填写 `PduR路由组`。一个目标腿属于多个组时使用英文分号分隔，例如：
-
-```text
-PduRRoutingPathGroup_DCAN;PduRRoutingPathGroup_Diag
-```
-
-名称必须与基准 ARXML 中现有 `PduRRoutingPathGroup` 的 `SHORT-NAME` 完全一致。工具不会根据目标网段猜组名，也不会创建、删除或重命名路由组。
+标准“直接报文路由”仍是 A:R 共 18 列，不需要填写路由组。工具会沿基准 ARXML 的
+`PduRDestPdu → EcuC PDU → CanIfTxPdu → TxBuffer` 引用关系，结合“引用数据”中的目标
+CAN 通道识别唯一应用路由组。找不到、存在歧义或只有 CanTp/DoIP 诊断组时会明确阻止生成；
+工具不会猜测、创建、删除或重命名路由组。
 
 工具不读取原始 Communication Routing Table，不解析 History，也不从自然语言推导需求。默认不覆盖已有输出；只有显式使用 `--overwrite` 才允许替换指定输出，但永远禁止把输出指向基准 ARXML。
 
@@ -117,16 +114,16 @@ python -m davinci_gw.mcp
 ```powershell
 davinci-gw validate `
   --config "input\网关路由配置表_v4.84.xlsx" `
-  --baseline "input\825E0GA.arxml"
+  --baseline "input\T13J.arxml"
 
 davinci-gw preview `
   --config "input\网关路由配置表_v4.84.xlsx" `
-  --baseline "input\825E0GA.arxml"
+  --baseline "input\T13J.arxml"
 
 davinci-gw generate `
   --config "input\网关路由配置表_v4.84.xlsx" `
-  --baseline "input\825E0GA.arxml" `
-  --output "output\825E0GA_v4.84.arxml"
+  --baseline "input\T13J.arxml" `
+  --output "output\T13J_v4.84.arxml"
 ```
 
 `validate` 只检查输入契约和 ARXML 基础结构。`preview` 在可丢弃工作树上完整规划 DELETE 和 ADD，显示新增、删除、已存在、已不存在、共享保留、超时清理和冲突，但不写文件。`generate` 执行同一份事务规划并生成输出。
@@ -143,7 +140,7 @@ davinci-gw generate `
 - “保留超时”：源信号仍有其他目标/Mapping/ADD 使用，或 DELETE 超时证据不足。这是正常的安全决策。
 - “缺失或不支持并跳过”：单条 ADD 缺少 DBC、HRH 或 TxBuffer 等依赖；其他可解析 ADD 仍可继续。
 - “候选不唯一”或“语义冲突”：工具无法证明对象归属，会阻止整份输出。请按错误中的工作表、行号和 ARXML 路径在 DaVinci 中清理重复或修复引用。
-- “路由组不存在/成员重复/悬空引用/删除后为空组”：工具会停止输出。DELETE 还会检查目标腿是否属于未在该行声明的其他组，避免误删仍被其他 RoutingGroup 使用的 DestPdu。
+- “未解析到应用路由组/成员重复/悬空引用/删除后为空组”：工具会停止输出。DELETE 会反查目标腿实际所属组，并与目标通道的主应用组核对，避免误删异常归组或被多个 RoutingGroup 使用的 DestPdu。
 
 LIN 信号端点不使用 `PSMM ↔ LIN04` 之类的固定项目映射。当配置表的逻辑网段不出现在 ComIPdu 名称中时，工具只根据报文名、信号名、方向和 `ComIPduSignalRef` 关系接受全局唯一的 LIN 结构候选；若 CAN/LIN 或多个 LIN 中有同名候选，则阻止输出。
 
@@ -156,7 +153,7 @@ LIN 信号端点不使用 `PSMM ↔ LIN04` 之类的固定项目映射。当配�
 - 任一规划、应用、序列化或临时输出验证失败，整个工作副本丢弃，不修改基准，不留目标或临时半成品。
 - 输出会重新解析，复核四模块、新增/删除/保留语义、参数删除、内部引用、UUID 和 Handle ID。
 
-完整字段规则见 [输入契约](docs/输入契约.md)，删除设计见 [第03轮开发日志](docs/第03轮开发日志.md)，公共接口与扩展架构见 [第04轮开发日志](docs/第04轮开发日志.md)，MCP 的交付证据见 [第05轮开发日志](docs/第05轮开发日志.md)，桌面版交付证据见 [第06轮开发日志](docs/第06轮开发日志.md)，PduR 路由组成员设计与验证见 [第07轮开发日志](docs/第07轮开发日志.md)。
+完整字段规则见 [输入契约](docs/输入契约.md)，删除设计见 [第03轮开发日志](docs/第03轮开发日志.md)，公共接口与扩展架构见 [第04轮开发日志](docs/第04轮开发日志.md)，MCP 的交付证据见 [第05轮开发日志](docs/第05轮开发日志.md)，桌面版交付证据见 [第06轮开发日志](docs/第06轮开发日志.md)，引用级成员能力见 [第07轮开发日志](docs/第07轮开发日志.md)，动态路由组与语义定位见 [第08轮开发日志](docs/第08轮开发日志.md)。
 
 ## 许可证
 

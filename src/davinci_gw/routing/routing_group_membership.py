@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Protocol, Sequence
 
 from lxml import etree
 
@@ -16,17 +16,24 @@ from davinci_gw.domain.models import (
     MutationAction,
     MutationKind,
     MutationOperation,
+    ReferenceDataEntry,
     SourceLocation,
 )
 from davinci_gw.modules import definitions as defs
-from davinci_gw.modules.common import MutationContext, definition_ref
+from davinci_gw.modules.common import (
+    MutationContext,
+    definition_ref,
+    semantic_values,
+    unique_named_node,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class RoutingGroupMembershipRequest:
-    """一条已规范化路由腿的成员关系请求，不包含 Excel 原始字符串。"""
+    """由路由语义派生的成员关系请求，不承载任何 Excel 路由组字段。"""
 
-    group_names: tuple[str, ...]
+    target_channel: str
+    target_buffer_path: str
     destination_path: str
     source: SourceLocation
     destination_exists: bool = True
@@ -39,6 +46,7 @@ class RoutingGroupMembershipProblem:
     code: str
     message: str
     source: SourceLocation
+    warning: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +67,15 @@ class _GroupState:
     path: str
     node: etree._Element
     members: tuple[_MemberEntry, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ApplicationGroupIndex:
+    """一次基线解析得到的主通道索引及基线一致性问题。"""
+
+    by_channel: dict[str, _GroupState]
+    buffer_channels: dict[str, tuple[str, ...]]
+    problems: tuple[RoutingGroupMembershipProblem, ...]
 
 
 class RoutingGroupModelError(ValueError):
@@ -150,16 +167,38 @@ class RoutingGroupMembershipService:
         document: ArxmlDocument,
         index: ArxmlIndex | None = None,
         adapter: RoutingGroupAdapter | None = None,
+        reference_data: Sequence[ReferenceDataEntry] = (),
     ) -> None:
         self.document = document
         self.index = index or document.build_index()
         self.adapter = adapter or MicrosarRoutingGroupAdapter()
+        self.reference_data = tuple(reference_data)
+        self._application_index: _ApplicationGroupIndex | None = None
+        self._reported_index_warnings = False
 
     @staticmethod
     def _problem(
-        code: str, message: str, source: SourceLocation,
+        code: str, message: str, source: SourceLocation, *, warning: bool = False,
     ) -> RoutingGroupMembershipProblem:
-        return RoutingGroupMembershipProblem(code, message, source)
+        return RoutingGroupMembershipProblem(code, message, source, warning)
+
+    @staticmethod
+    def _container_owner(node: etree._Element) -> etree._Element | None:
+        current: etree._Element | None = node
+        while current is not None:
+            if local_name(current) == "ECUC-CONTAINER-VALUE":
+                return current
+            current = current.getparent()
+        return None
+
+    @staticmethod
+    def _module_owner(node: etree._Element) -> etree._Element | None:
+        current: etree._Element | None = node
+        while current is not None:
+            if local_name(current) == "ECUC-MODULE-CONFIGURATION-VALUES":
+                return current
+            current = current.getparent()
+        return None
 
     @staticmethod
     def _for_destination(
@@ -208,40 +247,6 @@ class RoutingGroupMembershipService:
                 ),)
         return _GroupState(name, path, node, members), ()
 
-    def _named_group(
-        self, name: str, source: SourceLocation,
-    ) -> tuple[_GroupState | None, tuple[RoutingGroupMembershipProblem, ...]]:
-        named = self.index.find_by_short_name(name)
-        candidates = tuple(
-            node for node in named
-            if definition_ref(node, self.document.namespace) == self.adapter.group_definition
-        )
-        if not candidates:
-            actual_definitions = sorted({
-                definition_ref(node, self.document.namespace) or "<缺少 DEFINITION-REF>"
-                for node in named
-            })
-            if named:
-                return None, (self._problem(
-                    "PDUR_ROUTING_GROUP_MODEL_UNSUPPORTED",
-                    f"名称“{name}”存在对象，但定义为 {actual_definitions}，不符合当前支持的"
-                    f"“{self.adapter.group_definition}”模型。",
-                    source,
-                ),)
-            return None, (self._problem(
-                "PDUR_ROUTING_GROUP_NOT_FOUND",
-                f"指定路由组“{name}”不存在；工具不会按目标网段猜测或自动创建路由组。",
-                source,
-            ),)
-        if len(candidates) != 1:
-            paths = sorted(autosar_path(node, self.document.namespace) for node in candidates)
-            return None, (self._problem(
-                "PDUR_ROUTING_GROUP_AMBIGUOUS",
-                f"指定路由组“{name}”存在 {len(candidates)} 个候选：{paths}。",
-                source,
-            ),)
-        return self._inspect_group(candidates[0], source)
-
     def _all_groups(
         self, source: SourceLocation,
     ) -> tuple[tuple[_GroupState, ...], tuple[RoutingGroupMembershipProblem, ...]]:
@@ -262,6 +267,238 @@ class RoutingGroupMembershipService:
             if state is not None:
                 states.append(state)
         return tuple(states), tuple(problems)
+
+    def _buffer_channels(
+        self,
+    ) -> tuple[dict[str, tuple[str, ...]], tuple[RoutingGroupMembershipProblem, ...]]:
+        """把工作簿中的 TxBuffer 名称解析成完整路径，避免仅按短名连接两侧数据。"""
+        channels_by_path: dict[str, list[str]] = {}
+        for entry in self.reference_data:
+            if not entry.tx_buffer_name:
+                continue
+            state, node = unique_named_node(
+                self.index, self.document.namespace, entry.tx_buffer_name, defs.CANIF_BUFFER,
+            )
+            if state != "FOUND" or node is None:
+                # 只有被应用组成员实际使用的 TxBuffer 才会在下游形成阻断；此处不让无关通道污染结果。
+                continue
+            path = autosar_path(node, self.document.namespace)
+            channels_by_path.setdefault(path, []).append(entry.channel_name)
+        normalized = {
+            path: tuple(sorted(set(channels))) for path, channels in channels_by_path.items()
+        }
+        # 同一 TxBuffer 可能只在源端引用数据中复用；仅当应用组成员或当前目标行实际使用它时阻断。
+        return normalized, ()
+
+    def _member_channel(
+        self,
+        state: _GroupState,
+        member: _MemberEntry,
+        buffer_channels: dict[str, tuple[str, ...]],
+    ) -> tuple[str | None, str | None, int | None, RoutingGroupMembershipProblem | None]:
+        """沿 DestPdu→EcuC PDU→CanIfTxPdu→TxBuffer 精确反查目标通道。"""
+        destination = self.index.find_by_path(member.target_path)[0]
+        _, destination_refs = semantic_values(destination, self.document.namespace)
+        pdu_refs = destination_refs.get(defs.PDUR_DEST_PDU_REF, ())
+        module_refs = destination_refs.get(defs.PDUR_DEST_MODULE_REF, ())
+        if len(pdu_refs) != 1 or len(module_refs) != 1:
+            return None, None, None, self._problem(
+                "PDUR_ROUTING_GROUP_MEMBER_SEMANTIC_AMBIGUOUS",
+                f"应用组候选“{state.name}”（{state.path}）的成员“{member.target_path}”"
+                f"具有 {len(pdu_refs)} 个目标 PDU 引用和 {len(module_refs)} 个模块引用，无法分类。",
+                SourceLocation(),
+            )
+        tx_nodes: dict[str, etree._Element] = {}
+        for referrer in self.index.find_referrers(pdu_refs[0]):
+            owner = self._container_owner(referrer)
+            if owner is not None and definition_ref(owner, self.document.namespace) == defs.CANIF_TX:
+                tx_nodes[autosar_path(owner, self.document.namespace)] = owner
+        if not tx_nodes:
+            # 没有 CanIfTx 链的纯 CanTp/DoIP 成员属于诊断路由组，不进入普通报文候选。
+            return None, None, None, None
+        if len(tx_nodes) != 1:
+            return None, None, None, self._problem(
+                "PDUR_ROUTING_GROUP_TARGET_AMBIGUOUS",
+                f"路由组“{state.name}”（{state.path}）成员“{member.target_path}”的 EcuC PDU"
+                f"被 {len(tx_nodes)} 个 CanIfTxPdu 引用：{sorted(tx_nodes)}。",
+                SourceLocation(),
+            )
+        tx_path, tx_node = next(iter(tx_nodes.items()))
+        module_nodes = self.index.find_by_path(module_refs[0])
+        tx_module = self._module_owner(tx_node)
+        if (len(module_nodes) != 1
+                or definition_ref(module_nodes[0], self.document.namespace) != defs.PDUR_BSW_MODULE
+                or tx_module is None):
+            return None, None, None, self._problem(
+                "PDUR_ROUTING_GROUP_MODULE_UNRESOLVED",
+                f"路由组“{state.name}”（{state.path}）成员“{member.target_path}”的模块引用"
+                f"“{module_refs[0]}”无法唯一解析为 PduR BswModule。",
+                SourceLocation(),
+            )
+        _, bsw_refs = semantic_values(module_nodes[0], self.document.namespace)
+        expected_module_path = autosar_path(tx_module, self.document.namespace)
+        if bsw_refs.get(defs.PDUR_BSW_MODULE_REF) != (expected_module_path,):
+            return None, None, None, self._problem(
+                "PDUR_ROUTING_GROUP_MODULE_MISMATCH",
+                f"路由组“{state.name}”（{state.path}）成员“{member.target_path}”实际通过"
+                f" CanIfTxPdu“{tx_path}”落在模块“{expected_module_path}”，但其 PduR BswModule"
+                f" 引用为 {list(bsw_refs.get(defs.PDUR_BSW_MODULE_REF, ()))}。",
+                SourceLocation(),
+            )
+        parameters, refs = semantic_values(tx_node, self.document.namespace)
+        buffers = refs.get(defs.CANIF_TX_BUFFER_REF, ())
+        can_ids = parameters.get(defs.CANIF_TX_CAN_ID, ())
+        if len(buffers) != 1 or len(can_ids) != 1:
+            return None, None, None, self._problem(
+                "PDUR_ROUTING_GROUP_TARGET_AMBIGUOUS",
+                f"CanIfTxPdu“{tx_path}”的 CAN ID 或 TxBuffer 引用不唯一，"
+                f"对应组“{state.name}”、成员“{member.target_path}”。",
+                SourceLocation(),
+            )
+        channels = buffer_channels.get(buffers[0], ())
+        if len(channels) != 1:
+            return None, None, None, self._problem(
+                "PDUR_ROUTING_GROUP_CHANNEL_UNRESOLVED",
+                f"路由组“{state.name}”（{state.path}）成员“{member.target_path}”通过"
+                f" CanIfTxPdu“{tx_path}”指向 TxBuffer“{buffers[0]}”，但引用数据实际映射"
+                f"到 {len(channels)} 个通道 {list(channels)}。",
+                SourceLocation(),
+            )
+        try:
+            can_id = int(can_ids[0], 0)
+        except ValueError:
+            can_id = None
+        return channels[0], direct_child_text(tx_node, self.document.namespace, "SHORT-NAME"), can_id, None
+
+    def _build_application_index(self) -> _ApplicationGroupIndex:
+        states, group_problems = self._all_groups(SourceLocation())
+        buffer_channels, buffer_problems = self._buffer_channels()
+        problems = list(group_problems + buffer_problems)
+        main_groups: list[tuple[str, _GroupState]] = []
+        deviations: list[tuple[_GroupState, _MemberEntry, str, str | None, int | None]] = []
+        for state in states:
+            if not state.members:
+                continue
+            resolved: list[tuple[_MemberEntry, str, str | None, int | None]] = []
+            non_canif = 0
+            state_errors: list[RoutingGroupMembershipProblem] = []
+            for member in state.members:
+                channel, message, can_id, problem = self._member_channel(
+                    state, member, buffer_channels,
+                )
+                if problem is not None:
+                    state_errors.append(problem)
+                elif channel is None:
+                    non_canif += 1
+                else:
+                    resolved.append((member, channel, message, can_id))
+            if not resolved and non_canif == len(state.members) and not state_errors:
+                continue
+            if state_errors:
+                problems.extend(state_errors)
+                continue
+            if non_canif:
+                problems.append(self._problem(
+                    "PDUR_ROUTING_GROUP_MIXED_MODULES",
+                    f"路由组“{state.name}”（{state.path}）同时包含 CanIf 与非 CanIf 成员，"
+                    "不能作为普通应用路由组。",
+                    SourceLocation(),
+                ))
+                continue
+            counts = Counter(channel for _, channel, _, _ in resolved)
+            highest = max(counts.values())
+            leaders = sorted(channel for channel, count in counts.items() if count == highest)
+            if len(leaders) != 1:
+                problems.append(self._problem(
+                    "PDUR_ROUTING_GROUP_MAIN_CHANNEL_AMBIGUOUS",
+                    f"路由组“{state.name}”（{state.path}）的主通道最高计数并列：{dict(counts)}。",
+                    SourceLocation(),
+                ))
+                continue
+            main = leaders[0]
+            main_groups.append((main, state))
+            deviations.extend(
+                (state, member, channel, message, can_id)
+                for member, channel, message, can_id in resolved if channel != main
+            )
+        by_channel: dict[str, _GroupState] = {}
+        for channel, candidates in sorted(
+            (channel, [state for current, state in main_groups if current == channel])
+            for channel in {current for current, _ in main_groups}
+        ):
+            if len(candidates) != 1:
+                problems.append(self._problem(
+                    "PDUR_ROUTING_GROUP_CHANNEL_AMBIGUOUS",
+                    f"目标通道“{channel}”被多个应用路由组判定为主通道："
+                    f"{[(state.name, state.path) for state in candidates]}。",
+                    SourceLocation(),
+                ))
+            else:
+                by_channel[channel] = candidates[0]
+        for state, member, channel, message, can_id in deviations:
+            can_id_text = f"0x{can_id:X}" if can_id is not None else "<无效>"
+            problems.append(self._problem(
+                "PDUR_ROUTING_GROUP_NON_MAIN_MEMBER",
+                f"基线一致性警告：路由组“{state.name}”（{state.path}）的成员"
+                f"“{member.target_path}”实际落在非主通道“{channel}”，报文“{message or '<未命名>'}”"
+                f"、CAN ID {can_id_text}；该成员不会污染通道到主组的映射。",
+                SourceLocation(),
+                warning=True,
+            ))
+        return _ApplicationGroupIndex(by_channel, buffer_channels, tuple(problems))
+
+    def application_group_mapping(
+        self, source: SourceLocation = SourceLocation(),
+    ) -> tuple[dict[str, tuple[str, str]], tuple[RoutingGroupMembershipProblem, ...]]:
+        """公开只读的动态映射结果，供集成验证和问题展示使用。"""
+        index = self._get_application_index()
+        return (
+            {channel: (state.name, state.path) for channel, state in index.by_channel.items()},
+            tuple(replace(problem, source=source) for problem in index.problems),
+        )
+
+    def _get_application_index(self) -> _ApplicationGroupIndex:
+        if self._application_index is None:
+            self._application_index = self._build_application_index()
+        return self._application_index
+
+    def _index_problems(
+        self, source: SourceLocation,
+    ) -> tuple[RoutingGroupMembershipProblem, ...]:
+        index = self._get_application_index()
+        result = tuple(
+            replace(problem, source=source)
+            for problem in index.problems
+            if not problem.warning or not self._reported_index_warnings
+        )
+        self._reported_index_warnings = True
+        return result
+
+    def _group_for_request(
+        self, request: RoutingGroupMembershipRequest,
+    ) -> tuple[_GroupState | None, tuple[RoutingGroupMembershipProblem, ...]]:
+        index = self._get_application_index()
+        problems = list(self._index_problems(request.source))
+        if any(not problem.warning for problem in problems):
+            return None, self._for_destination(tuple(problems), request.destination_path)
+        channels = index.buffer_channels.get(request.target_buffer_path, ())
+        if channels != (request.target_channel,):
+            problems.append(self._problem(
+                "PDUR_ROUTING_GROUP_TARGET_IDENTITY_CONFLICT",
+                f"目标通道“{request.target_channel}”与 TxBuffer“{request.target_buffer_path}”"
+                f"的引用数据映射 {list(channels)} 不一致。",
+                request.source,
+            ))
+            return None, self._for_destination(tuple(problems), request.destination_path)
+        state = index.by_channel.get(request.target_channel)
+        if state is None:
+            problems.append(self._problem(
+                "PDUR_APPLICATION_ROUTING_GROUP_NOT_FOUND",
+                f"目标通道“{request.target_channel}”未解析到唯一普通应用路由组；"
+                "工具不会回退到 CanTp/DoIP 诊断组，也不会创建或猜测路由组。",
+                request.source,
+            ))
+        return state, self._for_destination(tuple(problems), request.destination_path)
 
     def groups_for_destination(self, destination_path: str) -> tuple[str, ...]:
         """严格查询 DestPdu 所属全部组；不支持或损坏的模型以异常显式阻断。"""
@@ -284,30 +521,23 @@ class RoutingGroupMembershipService:
         return sum(member.target_path == destination_path for member in members)
 
     def plan_add(self, request: RoutingGroupMembershipRequest) -> RoutingGroupMembershipPlan:
-        operations: list[MutationOperation] = []
-        problems: list[RoutingGroupMembershipProblem] = []
-        for name in request.group_names:
-            state, current = self._named_group(name, request.source)
-            problems.extend(self._for_destination(current, request.destination_path))
-            if state is None:
-                continue
-            matching = tuple(
-                member for member in state.members
-                if member.target_path == request.destination_path
-            )
-            if matching:
-                continue
-            operations.append(MutationOperation(
-                MutationKind.PDUR_ROUTING_GROUP_MEMBERSHIP,
-                state.path,
-                "",
-                self.adapter.member_reference_definition,
-                action=MutationAction.ADD_REFERENCE,
-                references=((self.adapter.member_reference_definition, request.destination_path),),
-                source_locations=(request.source,),
-            ))
+        state, problems = self._group_for_request(request)
+        if state is None or any(not problem.warning for problem in problems):
+            return RoutingGroupMembershipPlan((), problems)
+        matching = tuple(
+            member for member in state.members if member.target_path == request.destination_path
+        )
+        operations = () if matching else (MutationOperation(
+            MutationKind.PDUR_ROUTING_GROUP_MEMBERSHIP,
+            state.path,
+            "",
+            self.adapter.member_reference_definition,
+            action=MutationAction.ADD_REFERENCE,
+            references=((self.adapter.member_reference_definition, request.destination_path),),
+            source_locations=(request.source,),
+        ),)
         return RoutingGroupMembershipPlan(
-            () if problems else tuple(operations), tuple(problems),
+            operations, problems,
         )
 
     def plan_delete(
@@ -316,60 +546,62 @@ class RoutingGroupMembershipService:
         if not requests:
             return RoutingGroupMembershipPlan()
         states, problems_tuple = self._all_groups(requests[0].source)
-        problems = list(self._for_destination(
-            problems_tuple, requests[0].destination_path,
-        ))
-        by_name = {state.name: state for state in states}
+        problems = list(self._for_destination(problems_tuple, requests[0].destination_path))
         operations: dict[tuple[object, ...], MutationOperation] = {}
         for request in requests:
-            for name in request.group_names:
-                if name not in by_name:
-                    state, current = self._named_group(name, request.source)
-                    problems.extend(self._for_destination(current, request.destination_path))
-                    if state is not None:
-                        by_name[name] = state
-            actual_names = {
-                state.name for state in states
+            expected, current = self._group_for_request(request)
+            problems.extend(current)
+            actual = tuple(
+                state for state in states
                 if any(member.target_path == request.destination_path for member in state.members)
-            }
+            )
             if not request.destination_exists:
-                if actual_names:
+                if actual:
                     problems.append(self._problem(
                         "PDUR_ROUTING_GROUP_MEMBER_DANGLING",
                         f"目标 PduRDestPdu“{request.destination_path}”已不存在，但路由组"
-                        f" {sorted(actual_names)} 仍引用该路径。",
+                        f" {[state.name for state in actual]} 仍引用该路径。",
                         request.source,
                     ))
                 continue
-            declared = set(request.group_names)
-            missing = sorted(declared - actual_names)
-            if missing:
+            if expected is None:
+                continue
+            if not actual:
                 problems.append(self._problem(
                     "PDUR_ROUTING_GROUP_MEMBER_NOT_FOUND",
-                    f"目标 PduRDestPdu“{request.destination_path}”在指定路由组 {missing} 中没有成员引用；"
-                    "路由仍存在时不能把该不一致视为幂等成功。",
+                    f"目标 PduRDestPdu“{request.destination_path}”没有任何路由组成员引用；"
+                    f"按目标通道应属于“{expected.name}”（{expected.path}）。",
                     request.source,
                 ))
-            remaining = sorted(actual_names - declared)
-            if remaining:
+                continue
+            if len(actual) != 1:
                 problems.append(self._problem(
-                    "PDUR_ROUTING_GROUP_UNDECLARED_MEMBERSHIP",
-                    f"目标 PduRDestPdu“{request.destination_path}”还属于未在本行声明的路由组"
-                    f" {remaining}；不得删除该目标腿。",
+                    "PDUR_ROUTING_GROUP_MULTIPLE_MEMBERSHIP",
+                    f"目标 PduRDestPdu“{request.destination_path}”同时属于多个路由组："
+                    f"{[(state.name, state.path) for state in actual]}。",
                     request.source,
                 ))
-            for name in sorted(declared & actual_names):
-                state = by_name[name]
-                operation = MutationOperation(
-                    MutationKind.PDUR_ROUTING_GROUP_MEMBERSHIP,
-                    state.path,
-                    "",
-                    self.adapter.member_reference_definition,
-                    action=MutationAction.REMOVE_REFERENCE,
-                    references=((self.adapter.member_reference_definition, request.destination_path),),
-                    source_locations=(request.source,),
-                )
-                operations[operation.identity] = operation
+                continue
+            state = actual[0]
+            if state.path != expected.path:
+                problems.append(self._problem(
+                    "PDUR_ROUTING_GROUP_CHANNEL_MISMATCH",
+                    f"目标 PduRDestPdu“{request.destination_path}”实际属于“{state.name}”"
+                    f"（{state.path}），但目标通道“{request.target_channel}”的主应用组为"
+                    f"“{expected.name}”（{expected.path}）；工具不会自动迁移或纠正。",
+                    request.source,
+                ))
+                continue
+            operation = MutationOperation(
+                MutationKind.PDUR_ROUTING_GROUP_MEMBERSHIP,
+                state.path,
+                "",
+                self.adapter.member_reference_definition,
+                action=MutationAction.REMOVE_REFERENCE,
+                references=((self.adapter.member_reference_definition, request.destination_path),),
+                source_locations=(request.source,),
+            )
+            operations[operation.identity] = operation
 
         removals_by_group = Counter(operation.parent_path for operation in operations.values())
         for state in states:
@@ -389,8 +621,9 @@ class RoutingGroupMembershipService:
                     f"本批目标为 {targets}。工具不会删除路由组或保留空组输出。",
                     source,
                 ))
+        errors = any(not problem.warning for problem in problems)
         return RoutingGroupMembershipPlan(
-            () if problems else tuple(operations.values()), tuple(problems),
+            () if errors else tuple(operations.values()), tuple(problems),
         )
 
     def removal_referrers(

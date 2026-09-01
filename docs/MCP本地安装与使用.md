@@ -73,7 +73,7 @@ codex mcp list
 4. 把预览展示给用户，并取得明确确认。
 5. 调用 `generate_gateway_arxml`，传入同一进程预览返回的 `preparation_id` 和尚不存在的新 `.arxml` 绝对路径。
 
-第07轮输入契约要求直接报文 ADD/DELETE 行填写 `PduR路由组`，多个组使用英文分号。MCP 不增加专用字段或推断逻辑，仍由同一 `GatewayFacade` 在 validate/preview 阶段返回带工作表和行号的契约或路由组安全问题。
+MCP 与 GUI、CLI 使用同一份标准 18 列直接报文输入，不增加路由组字段。`GatewayFacade` 会根据目标通道和基准 ARXML 自动解析唯一应用路由组；无法解析、存在歧义或实际成员归组异常时，validate/preview 返回带工作表行、报文名称、CAN ID、通道、组名和完整对象路径的问题。
 
 Prepared Session 默认 15 分钟过期、进程内最多 8 个。成功生成后立即消费；失败、取消或进程退出后不能复用。输入文件在预览后发生变化时，生成会安全终止并要求重新预览。
 

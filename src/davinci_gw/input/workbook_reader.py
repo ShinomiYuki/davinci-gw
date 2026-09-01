@@ -208,29 +208,6 @@ def _optional_text(row: dict[str, object], field: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _routing_group_names(
-    value: object, path: Path, sheet: str, row_number: int,
-    issues: list[ValidationIssue],
-) -> tuple[str, ...] | None:
-    """在 Excel 边界完成英文分号拆分、空白清理和稳定去重。"""
-    if not isinstance(value, str) or "；" in value:
-        issues.append(_issue(
-            path, sheet, row_number, "PduR路由组", value,
-            "必须填写路由组名称；多个名称仅使用英文分号分隔。",
-            "WORKBOOK_ROUTING_GROUP_INVALID",
-        ))
-        return None
-    names = tuple(dict.fromkeys(part.strip() for part in value.split(";") if part.strip()))
-    if not names:
-        issues.append(_issue(
-            path, sheet, row_number, "PduR路由组", value,
-            "没有可用的路由组名称，请填写后重试。",
-            "WORKBOOK_ROUTING_GROUP_INVALID",
-        ))
-        return None
-    return names
-
-
 def _read_references(
     sheet: Worksheet, mapping: dict[str, int], path: Path, issues: list[ValidationIssue],
 ) -> list[ReferenceDataEntry]:
@@ -282,13 +259,10 @@ def _read_direct(
                                  path=path, sheet=sheet.title, row_number=number,
                                  field="目标网段报文Length", issues=issues,
                                  optional=_is_blank(row.get("目标网段报文Length")))
-        routing_group_names = _routing_group_names(
-            row.get("PduR路由组"), path, sheet.title, number, issues,
-        )
         identity = tuple(_text(row, field) for field in (
             "源网段报文名称", "源网段CAN通道", "目标网段报文名称", "目标网段CAN通道"))
         if (operation is None or not required_ok or source_id is None or target_id is None
-                or routing_group_names is None or any(v is None for v in identity)):
+                or any(v is None for v in identity)):
             continue
         source_name, source_channel, target_name, target_channel = identity
         key = DirectRouteKey(source_name, source_id, source_channel, target_name, target_id, target_channel)
@@ -309,7 +283,6 @@ def _read_direct(
             _text(row, "目标网段报文类型"), _text(row, "目标网段报文Checksum使能"),
             _text(row, "目标网段报文PnFilter使能"), _text(row, "目标网段报文Truncation使能"),
             _text(row, "路由Length Strategy功能选择"), SourceLocation(sheet.title, number),
-            routing_group_names,
         ))
     return changes
 

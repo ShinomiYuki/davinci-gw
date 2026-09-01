@@ -150,7 +150,7 @@ def test_duplicate_direct_destination_blocks_all_output(
     )
     assert not report.is_success
     assert not output.exists()
-    assert "候选数" in _messages(report)
+    assert "DIRECT_DELETE_DESTINATION_AMBIGUOUS" in {issue.code for issue in report.errors}
 
 
 def test_duplicate_direct_source_candidate_blocks_all_output(
@@ -173,7 +173,7 @@ def test_duplicate_direct_source_candidate_blocks_all_output(
     )
     assert not report.is_success
     assert not output.exists()
-    assert "SrcPdu" in _messages(report)
+    assert "DIRECT_DELETE_SOURCE_AMBIGUOUS" in {issue.code for issue in report.errors}
 
 
 def test_direct_delete_preserves_path_with_unknown_manual_child(
@@ -308,10 +308,8 @@ def test_source_chain_shared_by_other_pdur_path_is_retained(
     report = generate_inputs(
         workbook_factory(direct_rows=(_delete_direct(),), signal_rows=()), baseline, output,
     )
-    assert report.is_success, _messages(report)
-    index = ArxmlDocument.load(output).build_index()
-    assert len(index.find_by_path("/Cfg/CanIf/CanIfInitCfg/GWT_SRC_MSG_SRC_Rx")) == 1
-    assert len(index.find_by_path("/Cfg/EcuC/EcucPduCollection/GWT_SRC_MSG_SRC_Rx")) == 1
+    assert not report.is_success and not output.exists()
+    assert "DIRECT_DELETE_SOURCE_AMBIGUOUS" in {issue.code for issue in report.errors}
 
 
 def test_manual_or_incomplete_direct_object_is_not_guessed_or_deleted(
@@ -331,7 +329,9 @@ def test_manual_or_incomplete_direct_object_is_not_guessed_or_deleted(
     )
     assert not report.is_success
     assert not output.exists()
-    assert "无法" in _messages(report) or "实际候选数" in _messages(report)
+    assert "DIRECT_DELETE_TARGET_SEMANTIC_CONFLICT" in {
+        issue.code for issue in report.errors
+    }
 
 
 def test_delete_only_signal_destination_removes_mapping_and_matching_timeout(

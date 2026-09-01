@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import copy, deepcopy
 from pathlib import Path
 
 import pytest
 from lxml import etree
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 
 from davinci_gw.modules import definitions as defs
 from davinci_gw.application.generate import generate_inputs
@@ -22,36 +21,12 @@ DIRECT_HEADERS = (
     "目标网段报文Length", "目标网段报文类型", "目标网段CAN通道",
     "目标网段报文Checksum使能", "目标网段报文PnFilter使能",
     "目标网段报文Truncation使能", "路由Length Strategy功能选择", "操作类型",
-    "PduR路由组",
 )
 SIGNAL_HEADERS = (
     "源网段", "源报文名", "源信号名", "字节序", "超时值", "超时时间",
     "源信号组合名", "目标网段", "目标报文名", "目标信号名", "操作类型",
 )
 REFERENCE_HEADERS = ("CAN通道名称", "CanIfTxBuffer名称", "CanIfHrh名称")
-
-
-def migrate_round07_workbook(source: Path, target: Path) -> Path:
-    """为只读真实旧样例补充一个显式测试组，不修改原始输入且不在产品代码中猜组名。"""
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", message="Data Validation extension is not supported.*",
-        )
-        workbook = load_workbook(source)
-    try:
-        sheet = workbook["直接报文路由"]
-        headers = {cell.value: cell.column for cell in sheet[1]}
-        group_column = headers.get("PduR路由组") or sheet.max_column + 1
-        sheet.cell(row=1, column=group_column).value = "PduR路由组"
-        operation_column = headers["操作类型"]
-        for row in range(2, sheet.max_row + 1):
-            operation = str(sheet.cell(row=row, column=operation_column).value or "").strip().upper()
-            if operation in {"ADD", "DELETE"}:
-                sheet.cell(row=row, column=group_column).value = "PduRRoutingPathGroup_DCAN"
-        workbook.save(target)
-    finally:
-        workbook.close()
-    return target
 
 
 def direct_row(**changes: object) -> dict[str, object]:
@@ -66,7 +41,6 @@ def direct_row(**changes: object) -> dict[str, object]:
         "目标网段CAN通道": "DST_CAN", "目标网段报文Checksum使能": None,
         "目标网段报文PnFilter使能": None, "目标网段报文Truncation使能": "Enable",
         "路由Length Strategy功能选择": "IGNORE", "操作类型": "ADD",
-        "PduR路由组": "DefaultRoutingGroup",
     }
     row.update(changes)
     return row
@@ -248,11 +222,14 @@ def arxml_factory(tmp_path: Path) -> Callable[..., Path]:
                 )
                 add_container(
                     init_subs, "ExistingTx", defs.CANIF_TX, tx_params,
-                    ((defs.CANIF_TX_BUFFER_REF, "/Cfg/CanIf/CanIfInitCfg/TX"),
+                    ((defs.CANIF_TX_BUFFER_REF, "/Cfg/CanIf/CanIfInitCfg/TX2"),
                      (defs.CANIF_TX_PDU_REF, "/Cfg/EcuC/EcucPduCollection/ExistingPdu_Rx")),
                 )
             elif name == "PduR":
-                add_container(containers, "CanIf", "/MICROSAR/PduR/PduRBswModules/PduRBswModule")
+                add_container(
+                    containers, "CanIf", defs.PDUR_BSW_MODULE,
+                    references=((defs.PDUR_BSW_MODULE_REF, "/Cfg/CanIf"),),
+                )
                 tables = add_container(containers, "PduRRoutingTables", "/MICROSAR/PduR/PduRRoutingTables")
                 tables_subs = subcontainers(tables)
                 add_container(tables_subs, "Lock", "/MICROSAR/PduR/PduRRoutingTables/PduRLock")
