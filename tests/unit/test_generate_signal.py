@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 from lxml import etree
@@ -29,7 +30,11 @@ def test_single_signal_route_and_source_timeout(
     mapping = index.find_by_path("/Cfg/Com/ComConfig/GWT_Sig_SRC_SIG_SRC")
     assert len(mapping) == 1
     source = index.find_by_path("/Cfg/Com/ComConfig/SRC_SIG_oSRC_MSG_oSRC_Rx")[0]
+    target = index.find_by_path("/Cfg/Com/ComConfig/DST_SIG_oDST_MSG_oDST_Tx")[0]
     parameters, _ = semantic_values(source, document.namespace)
+    target_parameters, _ = semantic_values(target, document.namespace)
+    assert parameters[defs.COM_SIGNAL_ACCESS] == ("ACCESS_NEEDED_BY_SWC_OR_COM",)
+    assert target_parameters[defs.COM_SIGNAL_ACCESS] == ("ACCESS_NEEDED_BY_SWC_OR_COM",)
     assert parameters[defs.COM_TIMEOUT_ACTION] == ("REPLACE",)
     assert parameters[defs.COM_TIMEOUT] == ("2",)
     assert defs.COM_TIMEOUT_SUBSTITUTION not in parameters
@@ -51,6 +56,11 @@ def test_signal_one_to_many_has_one_source_and_two_destinations(
     definitions = [definition_ref(child, document.namespace) for child in group]
     assert definitions.count(defs.COM_GW_SOURCE) == 1
     assert definitions.count(defs.COM_GW_DEST) == 2
+    target_2 = document.build_index().find_by_path(
+        "/Cfg/Com/ComConfig/DST_SIG_2_oDST_MSG_oDST_Tx"
+    )[0]
+    parameters, _ = semantic_values(target_2, document.namespace)
+    assert parameters[defs.COM_SIGNAL_ACCESS] == ("ACCESS_NEEDED_BY_SWC_OR_COM",)
 
 
 def test_missing_target_signal_is_visible_skip_and_does_not_block_valid_target(
@@ -227,6 +237,62 @@ def test_signal_second_run_is_idempotent(
     assert report.is_success, _messages(report)
     assert report.plan.signal_added_count == 0
     assert report.plan.signal_existing_count == 1
+
+
+def test_existing_mapping_repairs_unclear_signal_access(
+    workbook_factory: object, arxml_factory: object, tmp_path: Path,
+) -> None:
+    """兼容上一版输出：Mapping 已存在时仍补齐 Rx/Tx Signal Access。"""
+    config = workbook_factory(direct_rows=())
+    generated = tmp_path / "generated.arxml"
+    assert generate_inputs(config, arxml_factory(), generated).is_success
+    document = ArxmlDocument.load(generated)
+    index = document.build_index()
+    for path in (
+        "/Cfg/Com/ComConfig/SRC_SIG_oSRC_MSG_oSRC_Rx",
+        "/Cfg/Com/ComConfig/DST_SIG_oDST_MSG_oDST_Tx",
+    ):
+        signal = index.find_by_path(path)[0]
+        for node in signal.iter():
+            if definition_ref(node, document.namespace) == defs.COM_SIGNAL_ACCESS:
+                node.find(f"{{{document.namespace}}}VALUE").text = "ACCESS_UNCLEAR"
+    legacy = tmp_path / "legacy.arxml"
+    document.tree.write(str(legacy), encoding="UTF-8", xml_declaration=True)
+
+    repaired = tmp_path / "repaired.arxml"
+    report = generate_inputs(config, legacy, repaired)
+    assert report.is_success, _messages(report)
+    assert report.plan.signal_existing_count == 1
+    repaired_document = ArxmlDocument.load(repaired)
+    repaired_index = repaired_document.build_index()
+    for path in (
+        "/Cfg/Com/ComConfig/SRC_SIG_oSRC_MSG_oSRC_Rx",
+        "/Cfg/Com/ComConfig/DST_SIG_oDST_MSG_oDST_Tx",
+    ):
+        parameters, _ = semantic_values(repaired_index.find_by_path(path)[0], repaired_document.namespace)
+        assert parameters[defs.COM_SIGNAL_ACCESS] == ("ACCESS_NEEDED_BY_SWC_OR_COM",)
+
+
+def test_duplicate_signal_access_blocks_without_partial_output(
+    workbook_factory: object, arxml_factory: object, tmp_path: Path,
+) -> None:
+    baseline = arxml_factory(filename="duplicate_access.arxml")
+    document = ArxmlDocument.load(baseline)
+    signal = document.build_index().find_by_path(
+        "/Cfg/Com/ComConfig/SRC_SIG_oSRC_MSG_oSRC_Rx"
+    )[0]
+    parameters = signal.find(f"{{{document.namespace}}}PARAMETER-VALUES")
+    access = next(
+        node for node in parameters
+        if definition_ref(node, document.namespace) == defs.COM_SIGNAL_ACCESS
+    )
+    parameters.append(deepcopy(access))
+    document.tree.write(str(baseline), encoding="UTF-8", xml_declaration=True)
+
+    output = tmp_path / "duplicate_access_output.arxml"
+    report = generate_inputs(workbook_factory(direct_rows=()), baseline, output)
+    assert not report.is_success and not output.exists()
+    assert "SIGNAL_ACCESS_CONFLICT" in {issue.code for issue in report.errors}
 
 
 def test_existing_source_mapping_only_adds_missing_destination(

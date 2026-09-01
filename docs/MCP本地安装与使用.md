@@ -75,6 +75,8 @@ codex mcp list
 
 MCP 与 GUI、CLI 使用同一份标准 18 列直接报文输入，不增加路由组字段。`GatewayFacade` 会根据目标通道和基准 ARXML 自动解析唯一应用路由组；无法解析、存在歧义或实际成员归组异常时，validate/preview 返回带工作表行、报文名称、CAN ID、通道、组名和完整对象路径的问题。
 
+信号 ADD 会同步把实际参与 Mapping 的 Rx、Tx `ComSignalAccess` 设置为 `ACCESS_NEEDED_BY_SWC_OR_COM`；已有 Mapping 重跑时也会补齐旧值。路由组非主成员属于基线 ARXML 警告，每个异常成员只返回一次，不绑定当前 Excel 行或当前目标 DestPdu。
+
 Prepared Session 默认 15 分钟过期、进程内最多 8 个。成功生成后立即消费；失败、取消或进程退出后不能复用。输入文件在预览后发生变化时，生成会安全终止并要求重新预览。
 
 ## 路径与输出安全

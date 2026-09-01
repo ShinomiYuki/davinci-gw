@@ -9,6 +9,8 @@ from lxml import etree
 
 from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.domain.errors import ArxmlStructureError, OutputWriteError
+from davinci_gw.modules import definitions as defs
+from davinci_gw.modules.common import MutationContext, definition_ref
 
 
 def test_namespace_schema_and_four_modules(arxml_factory: object) -> None:
@@ -78,6 +80,22 @@ def test_input_output_path_must_differ(arxml_factory: object) -> None:
     source = arxml_factory()
     with pytest.raises(OutputWriteError, match="不能与输入基准文件相同"):
         ArxmlDocument.load(source).write_atomic(source, overwrite=True)
+
+
+def test_mutation_context_rolls_back_existing_parameter_text(arxml_factory: object) -> None:
+    document = ArxmlDocument.load(arxml_factory())
+    index = document.build_index()
+    signal = index.find_by_path("/Cfg/Com/ComConfig/SRC_SIG_oSRC_MSG_oSRC_Rx")[0]
+    access = next(
+        node for node in signal.iter()
+        if definition_ref(node, document.namespace) == defs.COM_SIGNAL_ACCESS
+    )
+    value = access.find(f"{{{document.namespace}}}VALUE")
+    context = MutationContext(document.root, document.namespace, index)
+    context.set_text(value, "ACCESS_NEEDED_BY_SWC_OR_COM")
+    assert value.text == "ACCESS_NEEDED_BY_SWC_OR_COM"
+    context.rollback()
+    assert value.text == "ACCESS_UNCLEAR"
 
 
 def test_failed_serialization_leaves_no_target_or_temp(

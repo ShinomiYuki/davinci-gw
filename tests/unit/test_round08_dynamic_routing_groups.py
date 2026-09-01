@@ -231,9 +231,13 @@ def test_group_main_channel_tie_is_blocked(arxml_factory) -> None:
 def test_non_main_member_only_warns_and_does_not_pollute_mapping(arxml_factory) -> None:
     baseline = arxml_factory(filename="non_main_member.arxml")
     _add_off_channel_member(baseline, add_second_main=True)
-    mapping, problems = _service(baseline).application_group_mapping()
+    mapping, problems = _service(baseline).application_group_mapping(
+        SourceLocation("直接报文路由", 2),
+    )
     assert mapping["DST_CAN"][0] == "DefaultRoutingGroup"
     assert "SRC_CAN" not in mapping
     warnings = [problem for problem in problems if problem.warning]
     assert len(warnings) == 1
     assert "OffChannelDest" in warnings[0].message and "SRC_CAN" in warnings[0].message
+    assert warnings[0].source == SourceLocation()
+    assert "目标 PduRDestPdu" not in warnings[0].message

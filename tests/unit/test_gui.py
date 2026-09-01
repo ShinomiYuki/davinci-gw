@@ -15,7 +15,12 @@ from UI.task_runner import QtTaskRunner
 from UI.view_model import GatewayViewModel
 from davinci_gw.application.public_mapping import decisions_to_dto, issues_to_dto
 from davinci_gw.contracts import ChangeDetailDto, FeatureSummaryDto, MetricDto, OperationStatus
-from davinci_gw.domain.models import RetentionDecision, SourceLocation, ValidationIssue
+from davinci_gw.domain.models import (
+    RetentionDecision,
+    SourceLocation,
+    ValidationIssue,
+    ValidationSeverity,
+)
 from davinci_gw.input.workbook_reader import read_workbook
 
 
@@ -75,6 +80,21 @@ def test_state_output_and_issue_message_identity_rules(tmp_path: Path, workbook_
         ("SOURCE", "SRC_MSG", "0x100"),
         ("TARGET", "DST_MSG", "0x200"),
     ]
+
+    baseline_warning = issues_to_dto((ValidationIssue(
+        "PDUR_ROUTING_GROUP_NON_MAIN_MEMBER",
+        "基线一致性警告",
+        severity=ValidationSeverity.WARNING,
+        file_path=Path("baseline.arxml"),
+        location=SourceLocation(),
+    ),))[0]
+    model.set_issues((baseline_warning,))
+    assert model.index(0, 2).data() == "—"
+    assert model.index(0, 3).data() == "—"
+    assert model.index(0, 5).data() == "baseline.arxml"
+    assert model.index(0, 6).data() == (
+        "请核对基线 ARXML 中该路由组成员的实际归属；工具不会自动迁移"
+    )
 
 
 def test_feature_cards_are_created_from_dto_without_fixed_ids(qtbot) -> None:

@@ -82,12 +82,12 @@ def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> No
         if operation.action is MutationAction.UPSERT_PARAMETERS:
             found = index.find_by_path(operation.parent_path)
             if len(found) != 1:
-                failures.append(f"源超时对象“{operation.parent_path}”实际找到{len(found)}个")
+                failures.append(f"ComSignal 参数对象“{operation.parent_path}”实际找到{len(found)}个")
                 continue
             actual, _ = semantic_values(found[0], document.namespace)
             for definition, value in operation.parameters:
                 if actual.get(definition) != (value,):
-                    failures.append(f"源超时参数“{definition}”未按计划写入“{value}”")
+                    failures.append(f"ComSignal 参数“{definition}”未按计划写入“{value}”")
             continue
         if operation.action is MutationAction.RETAIN:
             found = index.find_by_path(operation.object_path)

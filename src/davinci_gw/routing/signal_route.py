@@ -122,6 +122,29 @@ class SignalRoutePlanner:
             return "AMBIGUOUS", None
         return "FOUND", candidates[0]
 
+    def _plan_access(
+        self,
+        route: SignalRouteChange,
+        signal_path: str,
+        role: str,
+        locations: tuple[SourceLocation, ...],
+    ) -> tuple[MutationOperation | None, ValidationIssue | None]:
+        """只为已确认参与 Mapping 的端点规划 Access，重复参数必须显式阻断。"""
+        operation = self.com.access_operation(signal_path, locations)
+        state = self.com.inspect_access(operation)
+        if state == "MISSING":
+            return operation, None
+        if state == "EXISTING":
+            return None, None
+        return None, _issue(
+            self.workbook,
+            route,
+            "SIGNAL_ACCESS_CONFLICT",
+            f"{role}ComSignal“{signal_path}”的 ComSignalAccess 重复或结构不完整，"
+            "无法安全设置为 ACCESS_NEEDED_BY_SWC_OR_COM。",
+            warning=False,
+        )
+
     def plan(self, routes: tuple[SignalRouteChange, ...]) -> SignalPlanningResult:
         """按完整源身份分组；单条缺失会跳过，冲突才阻断整次生成。"""
         groups: dict[tuple[str, str, str], list[SignalRouteChange]] = defaultdict(list)
@@ -211,11 +234,13 @@ class SignalRoutePlanner:
                     continue
 
             group_added = group_existing = 0
+            active_targets: list[tuple[SignalRouteChange, str]] = []
             for target, target_path in valid_targets:
                 if not mapping_new and mapping_node is not None:
                     destination_state, _ = self.com.find_destination_by_signal(mapping_node, target_path)
                     if destination_state == "FOUND":
                         group_existing += 1
+                        active_targets.append((target, target_path))
                         continue
                     if destination_state == "AMBIGUOUS":
                         issues.append(_issue(
@@ -233,14 +258,34 @@ class SignalRoutePlanner:
                 if state == "MISSING":
                     operations.append(destination)
                     group_added += 1
+                    active_targets.append((target, target_path))
                 elif state == "EXISTING":
                     group_existing += 1
+                    active_targets.append((target, target_path))
                 else:
                     issues.append(_issue(
                         self.workbook, target, "SIGNAL_DESTINATION_CONFLICT",
                         f"Destination“{destination.object_path}”已存在但指向或定义不同，请修复后重试。",
                         warning=False,
                     ))
+
+            if active_targets:
+                active_locations = tuple(item.source for item, _ in active_targets)
+                source_access, source_access_issue = self._plan_access(
+                    route, source_path, "源端 Rx ", active_locations,
+                )
+                if source_access is not None:
+                    operations.append(source_access)
+                if source_access_issue is not None:
+                    issues.append(source_access_issue)
+                for target, target_path in active_targets:
+                    target_access, target_access_issue = self._plan_access(
+                        target, target_path, "目标端 Tx ", (target.source,),
+                    )
+                    if target_access is not None:
+                        operations.append(target_access)
+                    if target_access_issue is not None:
+                        issues.append(target_access_issue)
 
             timeout, substitution = next(iter(timeout_values))
             timeout_operation = self.com.timeout_operation(source_path, timeout, substitution, locations)

@@ -12,9 +12,18 @@ from .delete import DeleteCoordinator
 
 def _merge_plans(delete: MutationPlan, add: MutationPlan) -> MutationPlan:
     """合并两个阶段的操作、问题、决策和用户可见统计。"""
+    issues = []
+    baseline_warning_keys: set[tuple[object, ...]] = set()
+    for issue in delete.issues + add.issues:
+        if issue.code == "PDUR_ROUTING_GROUP_NON_MAIN_MEMBER":
+            key = (issue.code, issue.message, issue.severity, issue.file_path)
+            if key in baseline_warning_keys:
+                continue
+            baseline_warning_keys.add(key)
+        issues.append(issue)
     return MutationPlan(
         operations=delete.operations + add.operations,
-        issues=delete.issues + add.issues,
+        issues=tuple(issues),
         direct_added_count=add.direct_added_count,
         direct_existing_count=add.direct_existing_count,
         direct_skipped_count=add.direct_skipped_count,

@@ -15,11 +15,11 @@ VSVersionInfo(
         '080404B0',
         [StringStruct('CompanyName', 'DaVinci GW Project'),
          StringStruct('FileDescription', 'DaVinci 网关路由桌面工具'),
-         StringStruct('FileVersion', '0.3.2'),
+         StringStruct('FileVersion', '0.3.3'),
          StringStruct('InternalName', 'davinci-gw-gui'),
          StringStruct('OriginalFilename', 'davinci-gw-gui.exe'),
          StringStruct('ProductName', 'DaVinci Gateway GUI'),
-         StringStruct('ProductVersion', '0.3.2')])
+         StringStruct('ProductVersion', '0.3.3')])
     ]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])
   ]

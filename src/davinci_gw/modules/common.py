@@ -320,7 +320,7 @@ def duplicate_uuids(root: etree._Element) -> tuple[str, ...]:
 
 @dataclass(slots=True)
 class MutationContext:
-    """一次应用过程共享的只读索引和新增节点登记表。"""
+    """一次应用过程共享的索引、新增节点和既有文本变更登记表。"""
 
     root: etree._Element
     namespace: str
@@ -328,6 +328,7 @@ class MutationContext:
     template_cache: dict[TemplateKey, etree._Element] = field(default_factory=dict)
     created: dict[str, etree._Element] = field(default_factory=dict)
     inserted: list[etree._Element] = field(default_factory=list)
+    text_changes: list[tuple[etree._Element, str | None]] = field(default_factory=list)
 
     def node_at(self, path: str) -> etree._Element:
         """唯一定位现有或本次刚创建的对象。"""
@@ -353,11 +354,19 @@ class MutationContext:
         self.inserted.append(node)
         return node
 
+    def set_text(self, node: etree._Element, value: str) -> None:
+        """修改既有值前登记原文，保证后续操作异常时可以完整回滚。"""
+        self.text_changes.append((node, node.text))
+        node.text = value
+
     def rollback(self) -> None:
-        """逆序移除本次插入节点，保证应用异常不会留下部分树修改。"""
+        """逆序恢复既有文本并移除新增节点，避免留下部分树修改。"""
+        for node, old_text in reversed(self.text_changes):
+            node.text = old_text
         for node in reversed(self.inserted):
             parent = node.getparent()
             if parent is not None:
                 parent.remove(node)
         self.inserted.clear()
         self.created.clear()
+        self.text_changes.clear()

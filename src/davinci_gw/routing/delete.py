@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from decimal import Decimal
+from pathlib import Path
 import re
 
 from lxml import etree
@@ -35,6 +36,7 @@ from davinci_gw.modules.ecuc_editor import EcucEditor
 from davinci_gw.modules.pdur_editor import PduREditor
 
 from .routing_group_membership import (
+    RoutingGroupMembershipProblem,
     RoutingGroupMembershipRequest,
     RoutingGroupMembershipService,
 )
@@ -89,6 +91,24 @@ def _issue(
         file_path=workbook.path,
         location=location,
     )
+
+
+def _membership_issue(
+    workbook: WorkbookData,
+    route: DirectRouteChange,
+    problem: RoutingGroupMembershipProblem,
+    baseline_path: Path,
+) -> ValidationIssue:
+    """基线警告只归属 ARXML；路由成员错误仍定位到对应 Excel 行。"""
+    if problem.warning:
+        return ValidationIssue(
+            code=problem.code,
+            message=problem.message,
+            severity=ValidationSeverity.WARNING,
+            file_path=baseline_path,
+            location=SourceLocation(),
+        )
+    return _issue(workbook, route, problem.code, problem.message)
 
 
 def _parent_and_name(path: str) -> tuple[str, str]:
@@ -492,9 +512,8 @@ class DeleteCoordinator:
         if not matches and routes:
             _, index_problems = self.routing_groups.application_group_mapping(routes[0].source)
             for problem in index_problems:
-                self.issues.append(_issue(
-                    self.workbook, routes[0], problem.code, problem.message,
-                    warning=problem.warning,
+                self.issues.append(_membership_issue(
+                    self.workbook, routes[0], problem, self.document.source_path,
                 ))
             return len(matches), missing
 
@@ -511,9 +530,9 @@ class DeleteCoordinator:
         membership = self.routing_groups.plan_delete(tuple(requests))
         routes_by_source = {route.source: route for route in routes}
         for problem in membership.problems:
-            route = routes_by_source[problem.source]
-            self.issues.append(_issue(
-                self.workbook, route, problem.code, problem.message, warning=problem.warning,
+            route = routes[0] if problem.warning else routes_by_source[problem.source]
+            self.issues.append(_membership_issue(
+                self.workbook, route, problem, self.document.source_path,
             ))
         if any(not problem.warning for problem in membership.problems):
             return len(matches), missing

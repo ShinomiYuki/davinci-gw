@@ -204,9 +204,9 @@ class RoutingGroupMembershipService:
     def _for_destination(
         problems: tuple[RoutingGroupMembershipProblem, ...], destination_path: str,
     ) -> tuple[RoutingGroupMembershipProblem, ...]:
-        """让所有成员关系错误都携带可直接检索的 DestPdu 完整路径。"""
+        """业务错误补充当前 DestPdu；基线警告不得错误绑定到正在处理的路由。"""
         return tuple(
-            problem if destination_path in problem.message else replace(
+            problem if problem.warning or destination_path in problem.message else replace(
                 problem,
                 message=f"{problem.message}（目标 PduRDestPdu：{destination_path}）",
             )
@@ -454,7 +454,10 @@ class RoutingGroupMembershipService:
         index = self._get_application_index()
         return (
             {channel: (state.name, state.path) for channel, state in index.by_channel.items()},
-            tuple(replace(problem, source=source) for problem in index.problems),
+            tuple(
+                problem if problem.warning else replace(problem, source=source)
+                for problem in index.problems
+            ),
         )
 
     def _get_application_index(self) -> _ApplicationGroupIndex:
@@ -467,7 +470,7 @@ class RoutingGroupMembershipService:
     ) -> tuple[RoutingGroupMembershipProblem, ...]:
         index = self._get_application_index()
         result = tuple(
-            replace(problem, source=source)
+            problem if problem.warning else replace(problem, source=source)
             for problem in index.problems
             if not problem.warning or not self._reported_index_warnings
         )

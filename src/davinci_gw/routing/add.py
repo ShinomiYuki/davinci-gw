@@ -81,6 +81,9 @@ class AddCoordinator:
                 "com_destination", frozenset({MutationKind.COM_GW_DESTINATION}), 90, self.com.apply,
             ),
             MutationHandler(
+                "com_signal_access", frozenset({MutationKind.COM_SIGNAL_ACCESS}), 95, self.com.apply,
+            ),
+            MutationHandler(
                 "com_timeout", frozenset({MutationKind.COM_SIGNAL_TIMEOUT}), 100, self.com.apply,
             ),
         ))
@@ -124,6 +127,9 @@ class AddCoordinator:
                         f"路由组成员操作的所属组“{operation.parent_path}”实际找到{len(owner)}个。",
                     ))
                 candidate_uuids = ()
+            elif operation.kind is MutationKind.COM_SIGNAL_ACCESS:
+                self.com.ensure_access_template(operation)
+                candidate_uuids = self.com.access_candidate_uuids(operation)
             elif operation.action is MutationAction.UPSERT_PARAMETERS:
                 self.com.ensure_timeout_templates(operation)
                 candidate_uuids = self.com.timeout_candidate_uuids(operation)

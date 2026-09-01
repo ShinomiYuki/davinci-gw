@@ -26,7 +26,7 @@ from .common import (
 
 
 class ComEditor:
-    """只负责 ComGwMapping、Source、Destination 和已有源 ComSignal 超时参数。"""
+    """负责 ComGwMapping 及参与路由的既有 ComSignal 参数。"""
 
     def __init__(self, document: ArxmlDocument, index: ArxmlIndex | None = None) -> None:
         self.document = document
@@ -227,6 +227,18 @@ class ComEditor:
             parameters=tuple(parameters), source_locations=locations,
         )
 
+    @staticmethod
+    def access_operation(
+        signal_path: str, locations: tuple[SourceLocation, ...],
+    ) -> MutationOperation:
+        """把实际参与网关路由的 Rx/Tx 信号标记为 SWC 或 COM 需要访问。"""
+        return MutationOperation(
+            MutationKind.COM_SIGNAL_ACCESS, signal_path, "", defs.COM_SIGNAL,
+            action=MutationAction.UPSERT_PARAMETERS,
+            parameters=((defs.COM_SIGNAL_ACCESS, "ACCESS_NEEDED_BY_SWC_OR_COM"),),
+            source_locations=locations,
+        )
+
     def inspect(self, operation: MutationOperation) -> str:
         """比较 Mapping/Source/Destination 完整语义。"""
         return inspect_operation(
@@ -249,6 +261,32 @@ class ComEditor:
                 return "CONFLICT"
         return "MISSING" if missing else "EXISTING"
 
+    def inspect_access(self, operation: MutationOperation) -> str:
+        """目标值已存在则幂等跳过；缺失或单个旧值允许更新，重复参数阻断。"""
+        found = self.index.find_by_path(operation.parent_path)
+        if len(found) != 1:
+            return "CONFLICT"
+        parameters = found[0].find(qualified(self.document.namespace, "PARAMETER-VALUES"))
+        if parameters is None:
+            return "CONFLICT"
+        entries = tuple(
+            node for node in parameters
+            if definition_ref(node, self.document.namespace) == defs.COM_SIGNAL_ACCESS
+        )
+        if len(entries) > 1:
+            return "CONFLICT"
+        if not entries:
+            return "MISSING"
+        values = tuple(
+            child for child in entries[0]
+            if isinstance(child.tag, str) and local_name(child) == "VALUE"
+        )
+        if len(values) != 1:
+            return "CONFLICT"
+        if values[0].text == "ACCESS_NEEDED_BY_SWC_OR_COM":
+            return "EXISTING"
+        return "MISSING"
+
     def _parameter_template(self, definition: str) -> etree._Element:
         cached = self._parameter_templates.get(definition)
         if cached is not None:
@@ -257,7 +295,20 @@ class ComEditor:
             if local_name(node).endswith("PARAM-VALUE"):
                 self._parameter_templates[definition] = node
                 return node
-        raise ArxmlStructureError(f"基准ARXML中缺少超时参数模板“{definition}”。")
+        raise ArxmlStructureError(f"基准ARXML中缺少 ComSignal 参数模板“{definition}”。")
+
+    def ensure_access_template(self, operation: MutationOperation) -> None:
+        """只有目标信号缺少参数节点时才要求基线提供同类型模板。"""
+        signal = self.index.find_by_path(operation.parent_path)
+        if len(signal) != 1:
+            raise ArxmlStructureError(f"ComSignal“{operation.parent_path}”无法唯一定位。")
+        parameters = signal[0].find(qualified(self.document.namespace, "PARAMETER-VALUES"))
+        entries = () if parameters is None else tuple(
+            node for node in parameters
+            if definition_ref(node, self.document.namespace) == defs.COM_SIGNAL_ACCESS
+        )
+        if not entries:
+            self._parameter_template(defs.COM_SIGNAL_ACCESS)
 
     def ensure_timeout_templates(self, operation: MutationOperation) -> None:
         """在修改前确认全部计划超时参数都有真实同类型模板。"""
@@ -278,6 +329,16 @@ class ComEditor:
         )
         return parameter
 
+    def _build_access_parameter(self, operation: MutationOperation) -> etree._Element:
+        """从真实枚举参数克隆 Access 节点，并使用独立种子生成潜在 UUID。"""
+        parameter = deepcopy(self._parameter_template(defs.COM_SIGNAL_ACCESS))
+        for child in parameter:
+            if isinstance(child.tag, str) and local_name(child) == "VALUE":
+                child.text = "ACCESS_NEEDED_BY_SWC_OR_COM"
+                break
+        regenerate_uuids(parameter, f"{operation.parent_path}:access:{defs.COM_SIGNAL_ACCESS}")
+        return parameter
+
     def timeout_candidate_uuids(self, operation: MutationOperation) -> tuple[str, ...]:
         """返回超时参数克隆会生成的 UUID，供完整计划预检。"""
         values: list[str] = []
@@ -285,6 +346,52 @@ class ComEditor:
             parameter = self._build_timeout_parameter(operation, definition, value)
             values.extend(node.get("UUID") for node in parameter.iter() if node.get("UUID"))
         return tuple(values)
+
+    def access_candidate_uuids(self, operation: MutationOperation) -> tuple[str, ...]:
+        """已有参数仅改值不产生 UUID；参数缺失时返回克隆节点的确定性 UUID。"""
+        signal = self.index.find_by_path(operation.parent_path)
+        if len(signal) != 1:
+            return ()
+        parameters = signal[0].find(qualified(self.document.namespace, "PARAMETER-VALUES"))
+        entries = () if parameters is None else tuple(
+            node for node in parameters
+            if definition_ref(node, self.document.namespace) == defs.COM_SIGNAL_ACCESS
+        )
+        if entries:
+            return ()
+        parameter = self._build_access_parameter(operation)
+        return tuple(node.get("UUID") for node in parameter.iter() if node.get("UUID"))
+
+    def apply_access(self, context: MutationContext, operation: MutationOperation) -> None:
+        """更新既有 Access 值；参数缺失时从真实同类型节点克隆补齐。"""
+        signal = context.node_at(operation.parent_path)
+        parameters = signal.find(qualified(context.namespace, "PARAMETER-VALUES"))
+        if parameters is None:
+            raise ArxmlStructureError(f"ComSignal“{operation.parent_path}”缺少PARAMETER-VALUES。")
+        entries = tuple(
+            node for node in parameters
+            if definition_ref(node, context.namespace) == defs.COM_SIGNAL_ACCESS
+        )
+        if len(entries) > 1:
+            raise ArxmlStructureError(
+                f"ComSignal“{operation.parent_path}”存在重复 ComSignalAccess 参数。"
+            )
+        if entries:
+            value = next(
+                (child for child in entries[0]
+                 if isinstance(child.tag, str) and local_name(child) == "VALUE"),
+                None,
+            )
+            if value is None:
+                raise ArxmlStructureError(
+                    f"ComSignal“{operation.parent_path}”的 ComSignalAccess 缺少 VALUE。"
+                )
+            if value.text != "ACCESS_NEEDED_BY_SWC_OR_COM":
+                context.set_text(value, "ACCESS_NEEDED_BY_SWC_OR_COM")
+            return
+        parameter = self._build_access_parameter(operation)
+        parameters.append(parameter)
+        context.inserted.append(parameter)
 
     def apply_timeout(self, context: MutationContext, operation: MutationOperation) -> None:
         """只向已有源 ComSignal 补充缺失超时参数，不触碰目标信号。"""
@@ -301,8 +408,10 @@ class ComEditor:
             context.inserted.append(parameter)
 
     def apply(self, context: MutationContext, operation: MutationOperation) -> None:
-        """应用一个 Com 映射容器或源端超时操作。"""
-        if operation.kind is MutationKind.COM_SIGNAL_TIMEOUT:
+        """应用一个 Com 映射容器或既有 ComSignal 参数操作。"""
+        if operation.kind is MutationKind.COM_SIGNAL_ACCESS:
+            self.apply_access(context, operation)
+        elif operation.kind is MutationKind.COM_SIGNAL_TIMEOUT:
             self.apply_timeout(context, operation)
         else:
             context.apply_container(operation)

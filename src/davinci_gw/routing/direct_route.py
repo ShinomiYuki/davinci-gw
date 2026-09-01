@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
 from davinci_gw.arxml.index import autosar_path
 from davinci_gw.domain.models import (
@@ -22,6 +23,7 @@ from davinci_gw.modules.pdur_editor import PduREditor
 
 from .naming import direct_source_name, direct_target_name, pdur_leg_name, pdur_path_name
 from .routing_group_membership import (
+    RoutingGroupMembershipProblem,
     RoutingGroupMembershipRequest,
     RoutingGroupMembershipService,
 )
@@ -64,6 +66,24 @@ def _issue(
         file_path=workbook.path,
         location=location,
     )
+
+
+def _membership_issue(
+    workbook: WorkbookData,
+    route: DirectRouteChange,
+    problem: RoutingGroupMembershipProblem,
+    baseline_path: Path,
+) -> ValidationIssue:
+    """基线警告不借用 Excel 行身份；业务错误仍回到触发它的路由行。"""
+    if problem.warning:
+        return ValidationIssue(
+            code=problem.code,
+            message=problem.message,
+            severity=ValidationSeverity.WARNING,
+            file_path=baseline_path,
+            location=SourceLocation(),
+        )
+    return _issue(workbook, route, problem.code, problem.message, warning=False)
 
 
 def _is_disabled_or_blank(value: str | None) -> bool:
@@ -291,9 +311,8 @@ class DirectRoutePlanner:
                         target.source,
                         destination_exists=False,
                     ))
-                    issues.extend(_issue(
-                        self.workbook, target, problem.code, problem.message,
-                        warning=problem.warning,
+                    issues.extend(_membership_issue(
+                        self.workbook, target, problem, self.routing_groups.document.source_path,
                     ) for problem in membership.problems)
                     if any(not problem.warning for problem in membership.problems):
                         continue
@@ -316,9 +335,8 @@ class DirectRoutePlanner:
                         target.key.target_channel, buffer_path or "", dest_probe.object_path,
                         target.source,
                     ))
-                    issues.extend(_issue(
-                        self.workbook, target, problem.code, problem.message,
-                        warning=problem.warning,
+                    issues.extend(_membership_issue(
+                        self.workbook, target, problem, self.routing_groups.document.source_path,
                     ) for problem in membership.problems)
                     if any(not problem.warning for problem in membership.problems):
                         continue

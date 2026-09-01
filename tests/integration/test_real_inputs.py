@@ -16,6 +16,8 @@ from davinci_gw.application.validate import inspect_baseline
 from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.contracts import OperationStatus, UpdateRequestDto
 from davinci_gw.input.workbook_reader import read_workbook
+from davinci_gw.modules import definitions as defs
+from davinci_gw.modules.common import semantic_values
 from davinci_gw.routing.routing_group_membership import RoutingGroupMembershipService
 
 
@@ -100,6 +102,18 @@ def test_real_inputs_preview_and_full_transaction_generation(tmp_path: Path) -> 
     facade = GatewayFacade()
     prepared = facade.prepare(UpdateRequestDto(str(CONFIG), str(BASELINE)))
     assert prepared.status is OperationStatus.SUCCESS, [issue.message for issue in prepared.issues]
+    assert prepared.preview is not None
+    baseline_warnings = [
+        issue for issue in prepared.preview.issues
+        if issue.code == "PDUR_ROUTING_GROUP_NON_MAIN_MEMBER"
+    ]
+    assert len(baseline_warnings) == 2
+    assert all(
+        issue.file_path == str(BASELINE) and issue.sheet_name is None
+        and issue.row_number is None and not issue.messages
+        for issue in baseline_warnings
+    )
+    assert all("目标 PduRDestPdu" not in issue.message for issue in baseline_warnings)
     features = {item.feature_id: item for item in prepared.preview.features}
     direct = {item.key: item.value for item in features["direct_message"].metrics}
     signal = {item.key: item.value for item in features["signal_route"].metrics}
@@ -108,6 +122,18 @@ def test_real_inputs_preview_and_full_transaction_generation(tmp_path: Path) -> 
     result = facade.commit_prepared(prepared.session_id, str(output))
     assert result.status is OperationStatus.SUCCESS, [issue.message for issue in result.issues]
     assert inspect_baseline(output).schema_filename == "AUTOSAR_00049.xsd"
+    output_document = ArxmlDocument.load(output)
+    output_index = output_document.build_index()
+    for signal_path in (
+        "/ActiveEcuC/Com/ComConfig/TMS_ModeAdjustDisplaySts_oTMS_3_oE0X_PT_CarFLZCU_VCU_GLMessagelis_db480268_Rx",
+        "/ActiveEcuC/Com/ComConfig/TMS_ModeAdjustDisplaySts_oFLZCU_44_oE0X_PT_CarFLZCU_VCU_BDMessagelis_a723ce90_Tx",
+        "/ActiveEcuC/Com/ComConfig/TMS_ZoneSelectionDisplaySts_oTMS_3_oE0X_PT_CarFLZCU_VCU_GLMessagelis_d2e4d783_Rx",
+        "/ActiveEcuC/Com/ComConfig/TMS_ZoneSelectionDisplaySts_oFLZCU_44_oE0X_PT_CarFLZCU_VCU_BDMessagelis_21bb2f41_Tx",
+    ):
+        parameters, _ = semantic_values(
+            output_index.find_by_path(signal_path)[0], output_document.namespace,
+        )
+        assert parameters[defs.COM_SIGNAL_ACCESS] == ("ACCESS_NEEDED_BY_SWC_OR_COM",)
     assert fingerprint(BASELINE) == baseline_before
     assert fingerprint(CONFIG) == config_before
 
