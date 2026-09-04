@@ -47,6 +47,8 @@ class RoutingGroupMembershipProblem:
     message: str
     source: SourceLocation
     warning: bool = False
+    baseline: bool = False
+    affected_channels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +78,17 @@ class _ApplicationGroupIndex:
     by_channel: dict[str, _GroupState]
     buffer_channels: dict[str, tuple[str, ...]]
     problems: tuple[RoutingGroupMembershipProblem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _MemberChannelResult:
+    """成员对普通 CAN 通道索引的解析结果。"""
+
+    channel: str | None = None
+    message_name: str | None = None
+    can_id: int | None = None
+    ignored_module: str | None = None
+    problem: RoutingGroupMembershipProblem | None = None
 
 
 class RoutingGroupModelError(ValueError):
@@ -173,14 +186,53 @@ class RoutingGroupMembershipService:
         self.index = index or document.build_index()
         self.adapter = adapter or MicrosarRoutingGroupAdapter()
         self.reference_data = tuple(reference_data)
+        canif_modules = tuple(
+            node for node in self.index.find_by_definition_ref("/MICROSAR/CanIf")
+            if local_name(node) == "ECUC-MODULE-CONFIGURATION-VALUES"
+        )
+        self._canif_module_path = (
+            autosar_path(canif_modules[0], self.document.namespace)
+            if len(canif_modules) == 1 else None
+        )
         self._application_index: _ApplicationGroupIndex | None = None
         self._reported_index_warnings = False
 
     @staticmethod
     def _problem(
-        code: str, message: str, source: SourceLocation, *, warning: bool = False,
+        code: str,
+        message: str,
+        source: SourceLocation,
+        *,
+        warning: bool = False,
+        baseline: bool = False,
+        affected_channels: tuple[str, ...] = (),
     ) -> RoutingGroupMembershipProblem:
-        return RoutingGroupMembershipProblem(code, message, source, warning)
+        return RoutingGroupMembershipProblem(
+            code,
+            message,
+            SourceLocation() if baseline else source,
+            warning,
+            baseline,
+            affected_channels,
+        )
+
+    @staticmethod
+    def _deduplicate_problems(
+        problems: tuple[RoutingGroupMembershipProblem, ...],
+    ) -> tuple[RoutingGroupMembershipProblem, ...]:
+        """按基线对象和完整说明去重，避免同一索引问题随 Excel 行重复出现。"""
+        unique: dict[tuple[object, ...], RoutingGroupMembershipProblem] = {}
+        for problem in problems:
+            key = (
+                problem.code,
+                problem.message,
+                problem.warning,
+                problem.baseline,
+                problem.affected_channels,
+                problem.source,
+            )
+            unique.setdefault(key, problem)
+        return tuple(unique.values())
 
     @staticmethod
     def _container_owner(node: etree._Element) -> etree._Element | None:
@@ -206,7 +258,7 @@ class RoutingGroupMembershipService:
     ) -> tuple[RoutingGroupMembershipProblem, ...]:
         """业务错误补充当前 DestPdu；基线警告不得错误绑定到正在处理的路由。"""
         return tuple(
-            problem if problem.warning or destination_path in problem.message else replace(
+            problem if problem.baseline or destination_path in problem.message else replace(
                 problem,
                 message=f"{problem.message}（目标 PduRDestPdu：{destination_path}）",
             )
@@ -225,6 +277,7 @@ class RoutingGroupMembershipService:
                 "PDUR_ROUTING_GROUP_MODEL_UNSUPPORTED",
                 f"路由组“{name}”（{path}）结构不受支持：{exc}。",
                 source,
+                baseline=True,
             ),)
         counts = Counter(member.target_path for member in members)
         duplicates = tuple(sorted(target for target, count in counts.items() if count > 1))
@@ -234,6 +287,7 @@ class RoutingGroupMembershipService:
                 f"路由组“{name}”（{path}）存在重复成员引用：{', '.join(duplicates)}。"
                 "请先在 DaVinci 中清理重复引用。",
                 source,
+                baseline=True,
             ),)
         for member in members:
             targets = self.index.find_by_path(member.target_path)
@@ -244,6 +298,7 @@ class RoutingGroupMembershipService:
                     f"路由组“{name}”（{path}）成员引用“{member.target_path}”无法唯一解析为"
                     " PduRDestPdu；禁止生成含悬空引用的输出。",
                     source,
+                    baseline=True,
                 ),)
         return _GroupState(name, path, node, members), ()
 
@@ -258,6 +313,7 @@ class RoutingGroupMembershipService:
                 "PDUR_ROUTING_GROUP_AMBIGUOUS",
                 f"路由组名称“{name}”存在多个候选，无法安全查询成员关系。",
                 source,
+                baseline=True,
             ) for name in sorted(duplicate_names))
         states: list[_GroupState] = []
         problems: list[RoutingGroupMembershipProblem] = []
@@ -295,116 +351,207 @@ class RoutingGroupMembershipService:
         state: _GroupState,
         member: _MemberEntry,
         buffer_channels: dict[str, tuple[str, ...]],
-    ) -> tuple[str | None, str | None, int | None, RoutingGroupMembershipProblem | None]:
-        """沿 DestPdu→EcuC PDU→CanIfTxPdu→TxBuffer 精确反查目标通道。"""
+    ) -> _MemberChannelResult:
+        """先按真实 BswModule 分类，再沿 CanIf 目标链精确反查普通 CAN 通道。"""
         destination = self.index.find_by_path(member.target_path)[0]
         _, destination_refs = semantic_values(destination, self.document.namespace)
         pdu_refs = destination_refs.get(defs.PDUR_DEST_PDU_REF, ())
         module_refs = destination_refs.get(defs.PDUR_DEST_MODULE_REF, ())
         if len(pdu_refs) != 1 or len(module_refs) != 1:
-            return None, None, None, self._problem(
+            return _MemberChannelResult(problem=self._problem(
                 "PDUR_ROUTING_GROUP_MEMBER_SEMANTIC_AMBIGUOUS",
                 f"应用组候选“{state.name}”（{state.path}）的成员“{member.target_path}”"
                 f"具有 {len(pdu_refs)} 个目标 PDU 引用和 {len(module_refs)} 个模块引用，无法分类。",
                 SourceLocation(),
+                baseline=True,
+            ))
+        pdu_nodes = self.index.find_by_path(pdu_refs[0])
+        if (len(pdu_nodes) != 1
+                or definition_ref(pdu_nodes[0], self.document.namespace) != defs.ECUC_PDU):
+            return _MemberChannelResult(problem=self._problem(
+                "PDUR_ROUTING_GROUP_MEMBER_SEMANTIC_AMBIGUOUS",
+                f"路由组“{state.name}”（{state.path}）成员“{member.target_path}”的目标 PDU 引用"
+                f"“{pdu_refs[0]}”无法唯一解析为 EcuC PDU。",
+                SourceLocation(),
+                baseline=True,
+            ))
+        module_nodes = self.index.find_by_path(module_refs[0])
+        if (len(module_nodes) != 1
+                or definition_ref(module_nodes[0], self.document.namespace) != defs.PDUR_BSW_MODULE):
+            return _MemberChannelResult(problem=self._problem(
+                "PDUR_ROUTING_GROUP_MODULE_UNRESOLVED",
+                f"路由组“{state.name}”（{state.path}）成员“{member.target_path}”的模块引用"
+                f"“{module_refs[0]}”无法唯一解析为 PduR BswModule。",
+                SourceLocation(),
+                baseline=True,
+            ))
+        _, bsw_refs = semantic_values(module_nodes[0], self.document.namespace)
+        module_targets = bsw_refs.get(defs.PDUR_BSW_MODULE_REF, ())
+        if len(module_targets) != 1:
+            return _MemberChannelResult(problem=self._problem(
+                "PDUR_ROUTING_GROUP_MODULE_UNRESOLVED",
+                f"路由组“{state.name}”（{state.path}）成员“{member.target_path}”对应的"
+                f" PduR BswModule 实际指向 {list(module_targets)}，无法唯一解析目标模块。",
+                SourceLocation(),
+                baseline=True,
+            ))
+        if module_targets[0] != self._canif_module_path:
+            # 合法的 Com/CanTp/DoIP 等目标成员不参与普通 CAN 通道投票，
+            # 但也不能因为它与 CanIf 成员共组就否定整个应用组。部分工程不会导出
+            # 诊断模块本体，因此分类以 PduRBswModuleRef 的真实完整路径为准。
+            target_modules = tuple(
+                node for node in self.index.find_by_path(module_targets[0])
+                if local_name(node) == "ECUC-MODULE-CONFIGURATION-VALUES"
             )
+            target_module_name = (
+                direct_child_text(target_modules[0], self.document.namespace, "SHORT-NAME")
+                if len(target_modules) == 1 else module_targets[0].rstrip("/").rsplit("/", 1)[-1]
+            ) or "<未命名模块>"
+            if len(target_modules) == 1 and not any(
+                (owner := self._module_owner(referrer)) is not None
+                and autosar_path(owner, self.document.namespace) == module_targets[0]
+                for referrer in self.index.find_referrers(pdu_refs[0])
+            ):
+                return _MemberChannelResult(problem=self._problem(
+                    "PDUR_ROUTING_GROUP_NON_CANIF_TARGET_UNRESOLVED",
+                    f"路由组“{state.name}”（{state.path}）的非 CanIf 目标成员"
+                    f"“{member.target_path}”声明目标模块“{target_module_name}”，但该模块中没有"
+                    f"对象引用 EcuC PDU“{pdu_refs[0]}”。",
+                    SourceLocation(),
+                    baseline=True,
+                ))
+            return _MemberChannelResult(ignored_module=target_module_name)
+
         tx_nodes: dict[str, etree._Element] = {}
         for referrer in self.index.find_referrers(pdu_refs[0]):
             owner = self._container_owner(referrer)
             if owner is not None and definition_ref(owner, self.document.namespace) == defs.CANIF_TX:
                 tx_nodes[autosar_path(owner, self.document.namespace)] = owner
         if not tx_nodes:
-            # 没有 CanIfTx 链的纯 CanTp/DoIP 成员属于诊断路由组，不进入普通报文候选。
-            return None, None, None, None
+            return _MemberChannelResult(problem=self._problem(
+                "PDUR_ROUTING_GROUP_TARGET_UNRESOLVED",
+                f"路由组“{state.name}”（{state.path}）的 CanIf 目标成员“{member.target_path}”"
+                f"引用 EcuC PDU“{pdu_refs[0]}”，但未找到对应 CanIfTxPdu。",
+                SourceLocation(),
+                baseline=True,
+            ))
         if len(tx_nodes) != 1:
-            return None, None, None, self._problem(
+            return _MemberChannelResult(problem=self._problem(
                 "PDUR_ROUTING_GROUP_TARGET_AMBIGUOUS",
                 f"路由组“{state.name}”（{state.path}）成员“{member.target_path}”的 EcuC PDU"
                 f"被 {len(tx_nodes)} 个 CanIfTxPdu 引用：{sorted(tx_nodes)}。",
                 SourceLocation(),
-            )
+                baseline=True,
+            ))
         tx_path, tx_node = next(iter(tx_nodes.items()))
-        module_nodes = self.index.find_by_path(module_refs[0])
         tx_module = self._module_owner(tx_node)
-        if (len(module_nodes) != 1
-                or definition_ref(module_nodes[0], self.document.namespace) != defs.PDUR_BSW_MODULE
-                or tx_module is None):
-            return None, None, None, self._problem(
+        if tx_module is None:
+            return _MemberChannelResult(problem=self._problem(
                 "PDUR_ROUTING_GROUP_MODULE_UNRESOLVED",
-                f"路由组“{state.name}”（{state.path}）成员“{member.target_path}”的模块引用"
-                f"“{module_refs[0]}”无法唯一解析为 PduR BswModule。",
+                f"CanIfTxPdu“{tx_path}”无法定位所属模块。",
                 SourceLocation(),
-            )
-        _, bsw_refs = semantic_values(module_nodes[0], self.document.namespace)
+                baseline=True,
+            ))
         expected_module_path = autosar_path(tx_module, self.document.namespace)
         if bsw_refs.get(defs.PDUR_BSW_MODULE_REF) != (expected_module_path,):
-            return None, None, None, self._problem(
+            return _MemberChannelResult(problem=self._problem(
                 "PDUR_ROUTING_GROUP_MODULE_MISMATCH",
                 f"路由组“{state.name}”（{state.path}）成员“{member.target_path}”实际通过"
                 f" CanIfTxPdu“{tx_path}”落在模块“{expected_module_path}”，但其 PduR BswModule"
                 f" 引用为 {list(bsw_refs.get(defs.PDUR_BSW_MODULE_REF, ()))}。",
                 SourceLocation(),
-            )
+                baseline=True,
+            ))
         parameters, refs = semantic_values(tx_node, self.document.namespace)
         buffers = refs.get(defs.CANIF_TX_BUFFER_REF, ())
         can_ids = parameters.get(defs.CANIF_TX_CAN_ID, ())
         if len(buffers) != 1 or len(can_ids) != 1:
-            return None, None, None, self._problem(
+            return _MemberChannelResult(problem=self._problem(
                 "PDUR_ROUTING_GROUP_TARGET_AMBIGUOUS",
                 f"CanIfTxPdu“{tx_path}”的 CAN ID 或 TxBuffer 引用不唯一，"
                 f"对应组“{state.name}”、成员“{member.target_path}”。",
                 SourceLocation(),
-            )
+                baseline=True,
+            ))
         channels = buffer_channels.get(buffers[0], ())
         if len(channels) != 1:
-            return None, None, None, self._problem(
+            return _MemberChannelResult(problem=self._problem(
                 "PDUR_ROUTING_GROUP_CHANNEL_UNRESOLVED",
                 f"路由组“{state.name}”（{state.path}）成员“{member.target_path}”通过"
                 f" CanIfTxPdu“{tx_path}”指向 TxBuffer“{buffers[0]}”，但引用数据实际映射"
                 f"到 {len(channels)} 个通道 {list(channels)}。",
                 SourceLocation(),
-            )
+                baseline=True,
+            ))
         try:
             can_id = int(can_ids[0], 0)
         except ValueError:
             can_id = None
-        return channels[0], direct_child_text(tx_node, self.document.namespace, "SHORT-NAME"), can_id, None
+        return _MemberChannelResult(
+            channels[0],
+            direct_child_text(tx_node, self.document.namespace, "SHORT-NAME"),
+            can_id,
+        )
 
     def _build_application_index(self) -> _ApplicationGroupIndex:
         states, group_problems = self._all_groups(SourceLocation())
         buffer_channels, buffer_problems = self._buffer_channels()
         problems = list(group_problems + buffer_problems)
+        if self._canif_module_path is None:
+            problems.append(self._problem(
+                "PDUR_ROUTING_GROUP_CANIF_MODULE_UNRESOLVED",
+                "基准 ARXML 中无法唯一定位 CanIf 模块，不能从 PduR BswModuleRef 安全识别"
+                "普通 CAN 目标成员。",
+                SourceLocation(),
+                baseline=True,
+            ))
+            return _ApplicationGroupIndex(
+                {}, buffer_channels, self._deduplicate_problems(tuple(problems)),
+            )
         main_groups: list[tuple[str, _GroupState]] = []
-        deviations: list[tuple[_GroupState, _MemberEntry, str, str | None, int | None]] = []
+        deviations: list[
+            tuple[_GroupState, _MemberEntry, str, str, str | None, int | None]
+        ] = []
         for state in states:
             if not state.members:
                 continue
             resolved: list[tuple[_MemberEntry, str, str | None, int | None]] = []
-            non_canif = 0
+            ignored: list[tuple[_MemberEntry, str]] = []
             state_errors: list[RoutingGroupMembershipProblem] = []
             for member in state.members:
-                channel, message, can_id, problem = self._member_channel(
-                    state, member, buffer_channels,
-                )
-                if problem is not None:
-                    state_errors.append(problem)
-                elif channel is None:
-                    non_canif += 1
+                result = self._member_channel(state, member, buffer_channels)
+                if result.problem is not None:
+                    state_errors.append(result.problem)
+                elif result.channel is None:
+                    if result.ignored_module is not None:
+                        ignored.append((member, result.ignored_module))
                 else:
-                    resolved.append((member, channel, message, can_id))
-            if not resolved and non_canif == len(state.members) and not state_errors:
+                    resolved.append(
+                        (member, result.channel, result.message_name, result.can_id)
+                    )
+            if not resolved and len(ignored) == len(state.members) and not state_errors:
+                # 纯 CanTp/DoIP/Com 等组没有普通 CanIf 目标，不属于应用通道索引。
                 continue
             if state_errors:
-                problems.extend(state_errors)
+                affected = tuple(sorted({channel for _, channel, _, _ in resolved}))
+                problems.extend(
+                    replace(problem, affected_channels=affected)
+                    for problem in state_errors
+                )
                 continue
-            if non_canif:
+            if ignored:
+                details = "；".join(
+                    f"{member.target_path} → {module}" for member, module in ignored
+                )
                 problems.append(self._problem(
-                    "PDUR_ROUTING_GROUP_MIXED_MODULES",
-                    f"路由组“{state.name}”（{state.path}）同时包含 CanIf 与非 CanIf 成员，"
-                    "不能作为普通应用路由组。",
+                    "PDUR_ROUTING_GROUP_NON_CANIF_MEMBERS_IGNORED",
+                    f"基线一致性提示：路由组“{state.name}”（{state.path}）包含"
+                    f" {len(ignored)} 个完整的非 CanIf 目标成员：{details}。这些成员仅从普通"
+                    " CAN 通道统计中排除，不会使该组其他 CanIf 成员失效，也不会被修改。",
                     SourceLocation(),
+                    warning=True,
+                    baseline=True,
                 ))
-                continue
             counts = Counter(channel for _, channel, _, _ in resolved)
             highest = max(counts.values())
             leaders = sorted(channel for channel, count in counts.items() if count == highest)
@@ -413,12 +560,14 @@ class RoutingGroupMembershipService:
                     "PDUR_ROUTING_GROUP_MAIN_CHANNEL_AMBIGUOUS",
                     f"路由组“{state.name}”（{state.path}）的主通道最高计数并列：{dict(counts)}。",
                     SourceLocation(),
+                    baseline=True,
+                    affected_channels=tuple(sorted(counts)),
                 ))
                 continue
             main = leaders[0]
             main_groups.append((main, state))
             deviations.extend(
-                (state, member, channel, message, can_id)
+                (state, member, main, channel, message, can_id)
                 for member, channel, message, can_id in resolved if channel != main
             )
         by_channel: dict[str, _GroupState] = {}
@@ -432,10 +581,12 @@ class RoutingGroupMembershipService:
                     f"目标通道“{channel}”被多个应用路由组判定为主通道："
                     f"{[(state.name, state.path) for state in candidates]}。",
                     SourceLocation(),
+                    baseline=True,
+                    affected_channels=(channel,),
                 ))
             else:
                 by_channel[channel] = candidates[0]
-        for state, member, channel, message, can_id in deviations:
+        for state, member, main, channel, message, can_id in deviations:
             can_id_text = f"0x{can_id:X}" if can_id is not None else "<无效>"
             problems.append(self._problem(
                 "PDUR_ROUTING_GROUP_NON_MAIN_MEMBER",
@@ -444,20 +595,21 @@ class RoutingGroupMembershipService:
                 f"、CAN ID {can_id_text}；该组主通道为“{main}”，该成员不会污染通道到主组的映射。",
                 SourceLocation(),
                 warning=True,
+                baseline=True,
             ))
-        return _ApplicationGroupIndex(by_channel, buffer_channels, tuple(problems))
+        return _ApplicationGroupIndex(
+            by_channel, buffer_channels, self._deduplicate_problems(tuple(problems)),
+        )
 
     def application_group_mapping(
         self, source: SourceLocation = SourceLocation(),
     ) -> tuple[dict[str, tuple[str, str]], tuple[RoutingGroupMembershipProblem, ...]]:
         """公开只读的动态映射结果，供集成验证和问题展示使用。"""
+        del source  # 保留公开签名兼容性；基线索引问题不再借用调用方的 Excel 行身份。
         index = self._get_application_index()
         return (
             {channel: (state.name, state.path) for channel, state in index.by_channel.items()},
-            tuple(
-                problem if problem.warning else replace(problem, source=source)
-                for problem in index.problems
-            ),
+            index.problems,
         )
 
     def _get_application_index(self) -> _ApplicationGroupIndex:
@@ -466,13 +618,22 @@ class RoutingGroupMembershipService:
         return self._application_index
 
     def _index_problems(
-        self, source: SourceLocation,
+        self, target_channel: str, *, include_unscoped: bool,
     ) -> tuple[RoutingGroupMembershipProblem, ...]:
         index = self._get_application_index()
         result = tuple(
-            problem if problem.warning else replace(problem, source=source)
+            problem
             for problem in index.problems
-            if not problem.warning or not self._reported_index_warnings
+            if (
+                (problem.warning and not self._reported_index_warnings)
+                or (
+                    not problem.warning
+                    and (
+                        (include_unscoped and not problem.affected_channels)
+                        or target_channel in problem.affected_channels
+                    )
+                )
+            )
         )
         self._reported_index_warnings = True
         return result
@@ -481,9 +642,15 @@ class RoutingGroupMembershipService:
         self, request: RoutingGroupMembershipRequest,
     ) -> tuple[_GroupState | None, tuple[RoutingGroupMembershipProblem, ...]]:
         index = self._get_application_index()
-        problems = list(self._index_problems(request.source))
+        state = index.by_channel.get(request.target_channel)
+        # 无法从损坏结构推导通道的问题，只在当前通道本身也没有可用主组时展示；
+        # 已由真实引用建立映射的其他通道不应被一个归属未知的组拖死。
+        problems = list(self._index_problems(
+            request.target_channel,
+            include_unscoped=state is None,
+        ))
         if any(not problem.warning for problem in problems):
-            return None, self._for_destination(tuple(problems), request.destination_path)
+            return None, tuple(problems)
         channels = index.buffer_channels.get(request.target_buffer_path, ())
         if channels != (request.target_channel,):
             problems.append(self._problem(
@@ -493,7 +660,6 @@ class RoutingGroupMembershipService:
                 request.source,
             ))
             return None, self._for_destination(tuple(problems), request.destination_path)
-        state = index.by_channel.get(request.target_channel)
         if state is None:
             problems.append(self._problem(
                 "PDUR_APPLICATION_ROUTING_GROUP_NOT_FOUND",
@@ -649,9 +815,10 @@ class RoutingGroupMembershipService:
                     f"本批目标为 {targets}。工具不会删除路由组或保留空组输出。",
                     source,
                 ))
-        errors = any(not problem.warning for problem in problems)
+        unique_problems = self._deduplicate_problems(tuple(problems))
+        errors = any(not problem.warning for problem in unique_problems)
         return RoutingGroupMembershipPlan(
-            () if errors else tuple(operations.values()), tuple(problems),
+            () if errors else tuple(operations.values()), unique_problems,
         )
 
     def removal_referrers(

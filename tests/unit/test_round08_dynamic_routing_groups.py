@@ -10,13 +10,22 @@ from davinci_gw.application.generate import generate_inputs
 from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.domain.models import (
     MutationAction,
+    MutationPlan,
     ReferenceDataEntry,
     SourceLocation,
+    ValidationIssue,
+    ValidationSeverity,
 )
 from davinci_gw.modules import definitions as defs
 from davinci_gw.modules.common import definition_ref
-from davinci_gw.routing.routing_group_membership import RoutingGroupMembershipService
+from davinci_gw.routing.routing_group_membership import (
+    RoutingGroupMembershipRequest,
+    RoutingGroupMembershipService,
+    _ApplicationGroupIndex,
+    _GroupState,
+)
 from davinci_gw.routing.delete import _message_identity_matches
+from davinci_gw.routing.transaction import _merge_plans
 from tests.conftest import direct_row
 
 
@@ -98,6 +107,62 @@ def _add_off_channel_member(path: Path, *, add_second_main: bool) -> None:
             "/Cfg/PduR/PduRRoutingTables/PduRRoutingTable/ExistingPath/ExistingDestSecond"
         )
         reference_values.append(main_reference)
+    tree.write(str(path), encoding="UTF-8", xml_declaration=True)
+
+
+def _add_complete_com_destination_to_application_group(path: Path) -> None:
+    """模拟真实工程：应用组含大量 CanIf 成员，同时保留一个完整 Com 目标成员。"""
+    tree = etree.parse(str(path))
+    namespace = etree.QName(tree.getroot()).namespace
+    pdur_module = next(
+        node for node in tree.getroot().iter()
+        if node.findtext(f"{{{namespace}}}SHORT-NAME") == "PduR"
+        and etree.QName(node).localname == "ECUC-MODULE-CONFIGURATION-VALUES"
+    )
+    canif_bsw = next(
+        node for node in pdur_module.iter()
+        if definition_ref(node, namespace) == defs.PDUR_BSW_MODULE
+    )
+    com_bsw = etree.fromstring(etree.tostring(canif_bsw))
+    com_bsw.find(f"{{{namespace}}}SHORT-NAME").text = "Com"
+    _set_reference(com_bsw, namespace, defs.PDUR_BSW_MODULE_REF, "/Cfg/Com")
+    canif_bsw.getparent().append(com_bsw)
+
+    com_ipdu = next(
+        node for node in tree.getroot().iter()
+        if node.findtext(f"{{{namespace}}}SHORT-NAME") == "SRC_MSG_oSRC_Rx"
+        and definition_ref(node, namespace) == defs.COM_IPDU
+    )
+    com_references = com_ipdu.find(f"{{{namespace}}}REFERENCE-VALUES")
+    com_pdu_reference = etree.SubElement(
+        com_references, f"{{{namespace}}}ECUC-REFERENCE-VALUE",
+    )
+    definition = etree.SubElement(
+        com_pdu_reference, f"{{{namespace}}}DEFINITION-REF",
+    )
+    definition.text = f"{defs.COM_IPDU}/ComPduIdRef"
+    value = etree.SubElement(com_pdu_reference, f"{{{namespace}}}VALUE-REF")
+    value.text = "/Cfg/EcuC/EcucPduCollection/ExistingPdu_Rx"
+
+    destination = next(
+        node for node in tree.getroot().iter()
+        if node.findtext(f"{{{namespace}}}SHORT-NAME") == "ExistingDest"
+    )
+    com_destination = etree.fromstring(etree.tostring(destination))
+    com_destination.find(f"{{{namespace}}}SHORT-NAME").text = "CompleteComDest"
+    _set_reference(com_destination, namespace, defs.PDUR_DEST_MODULE_REF, "/Cfg/PduR/Com")
+    destination.getparent().append(com_destination)
+    com_path = (
+        "/Cfg/PduR/PduRRoutingTables/PduRRoutingTable/ExistingPath/CompleteComDest"
+    )
+    group = next(
+        node for node in tree.getroot().iter()
+        if definition_ref(node, namespace) == defs.PDUR_ROUTING_GROUP
+    )
+    reference_values = group.find(f"{{{namespace}}}REFERENCE-VALUES")
+    com_reference = etree.fromstring(etree.tostring(reference_values[0]))
+    com_reference.find(f"{{{namespace}}}VALUE-REF").text = com_path
+    reference_values.append(com_reference)
     tree.write(str(path), encoding="UTF-8", xml_declaration=True)
 
 
@@ -239,5 +304,204 @@ def test_non_main_member_only_warns_and_does_not_pollute_mapping(arxml_factory) 
     warnings = [problem for problem in problems if problem.warning]
     assert len(warnings) == 1
     assert "OffChannelDest" in warnings[0].message and "SRC_CAN" in warnings[0].message
+    assert "该组主通道为“DST_CAN”" in warnings[0].message
     assert warnings[0].source == SourceLocation()
     assert "目标 PduRDestPdu" not in warnings[0].message
+
+
+def test_complete_non_canif_member_does_not_invalidate_application_group(
+    arxml_factory,
+) -> None:
+    baseline = arxml_factory(filename="mixed_complete_member.arxml")
+    _add_complete_com_destination_to_application_group(baseline)
+    service = _service(baseline)
+
+    mapping, problems = service.application_group_mapping()
+
+    assert mapping["DST_CAN"][0] == "DefaultRoutingGroup"
+    assert not [problem for problem in problems if not problem.warning]
+    notices = [
+        problem for problem in problems
+        if problem.code == "PDUR_ROUTING_GROUP_NON_CANIF_MEMBERS_IGNORED"
+    ]
+    assert len(notices) == 1
+    assert notices[0].baseline and "CompleteComDest" in notices[0].message
+    assert "Com" in notices[0].message and "目标 PduRDestPdu" not in notices[0].message
+
+
+def test_mixed_group_notice_is_deduplicated_and_owned_by_baseline(
+    workbook_factory, arxml_factory, tmp_path: Path,
+) -> None:
+    baseline = arxml_factory(filename="mixed_notice_base.arxml")
+    _add_complete_com_destination_to_application_group(baseline)
+    output = tmp_path / "mixed_notice_output.arxml"
+
+    report = generate_inputs(
+        workbook_factory(
+            filename="mixed_notice_v4.84.xlsx",
+            direct_rows=(
+                direct_row(),
+                direct_row(**{
+                    "目标网段报文名称": "DST_MSG_2",
+                    "目标网段报文CANID": "0x201",
+                }),
+            ),
+            signal_rows=(),
+        ),
+        baseline,
+        output,
+    )
+
+    assert report.is_success, _messages(report)
+    notices = [
+        issue for issue in report.warnings
+        if issue.code == "PDUR_ROUTING_GROUP_NON_CANIF_MEMBERS_IGNORED"
+    ]
+    assert len(notices) == 1
+    assert notices[0].file_path == baseline
+    assert notices[0].location == SourceLocation()
+    assert "目标 PduRDestPdu" not in notices[0].message
+
+
+def test_delete_is_not_blocked_by_complete_non_canif_member(
+    workbook_factory, arxml_factory, tmp_path: Path,
+) -> None:
+    baseline = tmp_path / "mixed_delete_base.arxml"
+    add_report = generate_inputs(
+        workbook_factory(filename="mixed_delete_add_v4.84.xlsx", signal_rows=()),
+        arxml_factory(filename="mixed_delete_seed.arxml"),
+        baseline,
+    )
+    assert add_report.is_success, _messages(add_report)
+    _add_complete_com_destination_to_application_group(baseline)
+
+    output = tmp_path / "mixed_delete_output.arxml"
+    delete_report = generate_inputs(
+        workbook_factory(
+            filename="mixed_delete_v4.84.xlsx",
+            direct_rows=(direct_row(**{"操作类型": "DELETE"}),),
+            signal_rows=(),
+        ),
+        baseline,
+        output,
+    )
+
+    assert delete_report.is_success, _messages(delete_report)
+    assert sum(
+        issue.code == "PDUR_ROUTING_GROUP_NON_CANIF_MEMBERS_IGNORED"
+        for issue in delete_report.warnings
+    ) == 1
+
+
+def test_channel_scoped_index_error_does_not_block_unrelated_request(
+    arxml_factory,
+) -> None:
+    baseline = arxml_factory(filename="scoped_index_problem.arxml")
+    service = _service(baseline)
+    document = service.document
+    group_node = next(
+        node for node in document.root.iter()
+        if definition_ref(node, document.namespace) == defs.PDUR_ROUTING_GROUP
+    )
+    state = _GroupState(
+        "DefaultRoutingGroup",
+        "/Cfg/PduR/PduRRoutingTables/DefaultRoutingGroup",
+        group_node,
+        (),
+    )
+    blocker = service._problem(
+        "PDUR_ROUTING_GROUP_MAIN_CHANNEL_AMBIGUOUS",
+        "ICCAN 路由组主通道并列。",
+        SourceLocation(),
+        baseline=True,
+        affected_channels=("ICCAN",),
+    )
+    service._application_index = _ApplicationGroupIndex(
+        {"DST_CAN": state},
+        {
+            "/Cfg/CanIf/CanIfInitCfg/TX2": ("DST_CAN",),
+            "/Cfg/CanIf/CanIfInitCfg/TX": ("ICCAN",),
+        },
+        (blocker,),
+    )
+
+    unrelated_state, unrelated_problems = service._group_for_request(
+        RoutingGroupMembershipRequest(
+            "DST_CAN",
+            "/Cfg/CanIf/CanIfInitCfg/TX2",
+            "/Cfg/PduR/NewDest",
+            SourceLocation("直接报文路由", 2),
+            destination_exists=False,
+        )
+    )
+    affected_state, affected_problems = service._group_for_request(
+        RoutingGroupMembershipRequest(
+            "ICCAN",
+            "/Cfg/CanIf/CanIfInitCfg/TX",
+            "/Cfg/PduR/ICCanDest",
+            SourceLocation("直接报文路由", 3),
+            destination_exists=False,
+        )
+    )
+
+    assert unrelated_state is state
+    assert not [problem for problem in unrelated_problems if not problem.warning]
+    assert affected_state is None
+    assert [problem.code for problem in affected_problems] == [
+        "PDUR_ROUTING_GROUP_MAIN_CHANNEL_AMBIGUOUS"
+    ]
+    assert affected_problems[0].baseline
+
+
+def test_transaction_deduplicates_same_baseline_problem_from_delete_and_add() -> None:
+    issue = ValidationIssue(
+        "PDUR_ROUTING_GROUP_NON_CANIF_MEMBERS_IGNORED",
+        "同一基线问题",
+        severity=ValidationSeverity.WARNING,
+        file_path=Path("baseline.arxml"),
+        location=SourceLocation(),
+    )
+
+    merged = _merge_plans(MutationPlan(issues=(issue,)), MutationPlan(issues=(issue,)))
+
+    assert merged.issues == (issue,)
+
+
+def test_unscoped_broken_group_does_not_block_channel_with_valid_mapping(
+    arxml_factory,
+) -> None:
+    baseline = arxml_factory(filename="unscoped_group_problem.arxml")
+    service = _service(baseline)
+    document = service.document
+    group_node = next(
+        node for node in document.root.iter()
+        if definition_ref(node, document.namespace) == defs.PDUR_ROUTING_GROUP
+    )
+    state = _GroupState(
+        "DefaultRoutingGroup",
+        "/Cfg/PduR/PduRRoutingTables/DefaultRoutingGroup",
+        group_node,
+        (),
+    )
+    unscoped = service._problem(
+        "PDUR_ROUTING_GROUP_MODEL_UNSUPPORTED",
+        "另一个组结构损坏且无法推导通道。",
+        SourceLocation(),
+        baseline=True,
+    )
+    service._application_index = _ApplicationGroupIndex(
+        {"DST_CAN": state},
+        {"/Cfg/CanIf/CanIfInitCfg/TX2": ("DST_CAN",)},
+        (unscoped,),
+    )
+
+    selected, problems = service._group_for_request(RoutingGroupMembershipRequest(
+        "DST_CAN",
+        "/Cfg/CanIf/CanIfInitCfg/TX2",
+        "/Cfg/PduR/NewDest",
+        SourceLocation("直接报文路由", 2),
+        destination_exists=False,
+    ))
+
+    assert selected is state
+    assert problems == ()

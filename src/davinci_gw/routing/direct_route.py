@@ -75,12 +75,14 @@ def _membership_issue(
     problem: RoutingGroupMembershipProblem,
     baseline_path: Path,
 ) -> ValidationIssue:
-    """基线警告不借用 Excel 行身份；业务错误仍回到触发它的路由行。"""
-    if problem.warning:
+    """基线问题归属 ARXML；只有请求级问题才使用 Excel 行身份。"""
+    if problem.baseline:
         return ValidationIssue(
             code=problem.code,
             message=problem.message,
-            severity=ValidationSeverity.WARNING,
+            severity=(
+                ValidationSeverity.WARNING if problem.warning else ValidationSeverity.ERROR
+            ),
             file_path=baseline_path,
             location=SourceLocation(),
         )
@@ -89,6 +91,15 @@ def _membership_issue(
 
 def _is_disabled_or_blank(value: str | None) -> bool:
     return value is None or value.strip().upper() in {"", "DISABLE"}
+
+
+def _deduplicate_issues(issues: list[ValidationIssue]) -> tuple[ValidationIssue, ...]:
+    """基线问题不随需求行复制；请求级问题仍保留各自行号。"""
+    unique: dict[tuple[object, ...], ValidationIssue] = {}
+    for issue in issues:
+        key = (issue.code, issue.message, issue.severity, issue.file_path, issue.location)
+        unique.setdefault(key, issue)
+    return tuple(unique.values())
 
 
 class DirectRoutePlanner:
@@ -452,4 +463,6 @@ class DirectRoutePlanner:
                 operations.extend(group_operations)
             if group_added:
                 added += group_added
-        return DirectPlanningResult(tuple(operations), tuple(issues), added, existing, skipped)
+        return DirectPlanningResult(
+            tuple(operations), _deduplicate_issues(issues), added, existing, skipped,
+        )

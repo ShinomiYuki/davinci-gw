@@ -96,6 +96,18 @@ def test_state_output_and_issue_message_identity_rules(tmp_path: Path, workbook_
         "请核对基线 ARXML 中该路由组成员的实际归属；工具不会自动迁移"
     )
 
+    ignored_member = issues_to_dto((ValidationIssue(
+        "PDUR_ROUTING_GROUP_NON_CANIF_MEMBERS_IGNORED",
+        "非 CanIf 成员已排除",
+        severity=ValidationSeverity.WARNING,
+        file_path=Path("baseline.arxml"),
+        location=SourceLocation(),
+    ),))[0]
+    model.set_issues((ignored_member,))
+    assert model.index(0, 6).data() == (
+        "无需修改配置表；工具已排除该成员，如需确认请核对基线 ARXML"
+    )
+
 
 def test_feature_cards_are_created_from_dto_without_fixed_ids(qtbot) -> None:
     runner = _FakeRunner()

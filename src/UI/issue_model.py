@@ -51,6 +51,8 @@ class IssueTableModel(QAbstractTableModel):
             return "无需处理"
         if issue.code == "PDUR_ROUTING_GROUP_NON_MAIN_MEMBER":
             return "请核对基线 ARXML 中该路由组成员的实际归属；工具不会自动迁移"
+        if issue.code == "PDUR_ROUTING_GROUP_NON_CANIF_MEMBERS_IGNORED":
+            return "无需修改配置表；工具已排除该成员，如需确认请核对基线 ARXML"
         if issue.field_name:
             return f"请检查“{issue.field_name}”后重新预览"
         return "请按说明检查输入后重新预览"

@@ -13,13 +13,23 @@ from .delete import DeleteCoordinator
 def _merge_plans(delete: MutationPlan, add: MutationPlan) -> MutationPlan:
     """合并两个阶段的操作、问题、决策和用户可见统计。"""
     issues = []
-    baseline_warning_keys: set[tuple[object, ...]] = set()
+    issue_keys: set[tuple[object, ...]] = set()
     for issue in delete.issues + add.issues:
-        if issue.code == "PDUR_ROUTING_GROUP_NON_MAIN_MEMBER":
-            key = (issue.code, issue.message, issue.severity, issue.file_path)
-            if key in baseline_warning_keys:
-                continue
-            baseline_warning_keys.add(key)
+        # DELETE 和 ADD 使用各自的只读索引服务，同一基线问题可能在两个阶段各发现一次。
+        # 这里按完整可见身份统一去重，不再只照顾某一个告警代码。
+        key = (
+            issue.code,
+            issue.message,
+            issue.severity,
+            issue.category,
+            issue.file_path,
+            issue.location,
+            issue.field_name,
+            repr(issue.actual_value),
+        )
+        if key in issue_keys:
+            continue
+        issue_keys.add(key)
         issues.append(issue)
     return MutationPlan(
         operations=delete.operations + add.operations,

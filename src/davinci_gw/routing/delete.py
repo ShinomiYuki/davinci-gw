@@ -103,12 +103,14 @@ def _membership_issue(
     problem: RoutingGroupMembershipProblem,
     baseline_path: Path,
 ) -> ValidationIssue:
-    """基线警告只归属 ARXML；路由成员错误仍定位到对应 Excel 行。"""
-    if problem.warning:
+    """基线问题只归属 ARXML；请求级成员错误才定位到对应 Excel 行。"""
+    if problem.baseline:
         return ValidationIssue(
             code=problem.code,
             message=problem.message,
-            severity=ValidationSeverity.WARNING,
+            severity=(
+                ValidationSeverity.WARNING if problem.warning else ValidationSeverity.ERROR
+            ),
             file_path=baseline_path,
             location=SourceLocation(),
         )
@@ -438,7 +440,7 @@ class DeleteCoordinator:
         membership = self.routing_groups.plan_delete(tuple(requests))
         routes_by_source = {route.source: route for route in routes}
         for problem in membership.problems:
-            route = routes[0] if problem.warning else routes_by_source[problem.source]
+            route = routes[0] if problem.baseline else routes_by_source[problem.source]
             self.issues.append(_membership_issue(
                 self.workbook, route, problem, self.document.source_path,
             ))
