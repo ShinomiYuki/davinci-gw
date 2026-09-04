@@ -168,6 +168,31 @@ class ComEditor:
                 candidates.append(mapping)
         return tuple(candidates)
 
+    def gateway_references_for_signal_identity(
+        self, message_name: str, signal_name: str, direction: str,
+    ) -> tuple[str, ...]:
+        """返回网关 Mapping 中仍与报文/信号身份匹配的引用路径。
+
+        DELETE 遇到已被 DBC 移除的 ComIPdu 时，不能仅凭端点缺失就断言路由
+        已不存在；旧 Mapping 仍可能保留指向已删除 ComSignal 的悬空引用。这里
+        只检查 ComGwSource/ComGwDestination 的真实引用，并以完整信号名前缀和
+        Rx/Tx 边界匹配，避免相似报文或信号名称造成误判。
+        """
+        reference_definition = (
+            defs.COM_GW_SOURCE_SIGNAL_REF
+            if direction == "RECEIVE" else defs.COM_GW_DEST_SIGNAL_REF
+        )
+        prefix = f"{signal_name}_o{message_name}_o"
+        suffix = "_Rx" if direction == "RECEIVE" else "_Tx"
+        matches: set[str] = set()
+        for mapping in self.index.find_by_definition_ref(defs.COM_GW_MAPPING):
+            _, references = semantic_values(mapping, self.document.namespace, recursive=True)
+            for path in references.get(reference_definition, ()):
+                short_name = path.rstrip("/").rsplit("/", 1)[-1]
+                if short_name.startswith(prefix) and short_name.endswith(suffix):
+                    matches.add(path)
+        return tuple(sorted(matches))
+
     def find_destination_by_signal(
         self, mapping: etree._Element, signal_path: str,
     ) -> tuple[str, etree._Element | None]:

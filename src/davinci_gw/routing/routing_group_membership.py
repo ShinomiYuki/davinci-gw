@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, replace
+import re
 from typing import Protocol, Sequence
 
 from lxml import etree
@@ -233,6 +234,20 @@ class RoutingGroupMembershipService:
             )
             unique.setdefault(key, problem)
         return tuple(unique.values())
+
+    @staticmethod
+    def _name_confirms_application_group(state: _GroupState, channel: str) -> bool:
+        """在结构候选冲突时，用组名确认唯一的通道应用组。
+
+        真实 CanIf 引用始终是建立候选的前提；名称只在多个组落到同一通道时
+        作为交叉证据。去除分隔符和大小写后要求以 ``<通道>App`` 结尾，既不
+        写死项目映射，也不会因名称中偶然包含通道文本而接纳测试或专项组。
+        """
+        normalized_name = re.sub(r"[^0-9A-Za-z]", "", state.name).casefold()
+        normalized_channel = re.sub(r"[^0-9A-Za-z]", "", channel).casefold()
+        return bool(normalized_channel) and normalized_name.endswith(
+            f"{normalized_channel}app"
+        )
 
     @staticmethod
     def _container_owner(node: etree._Element) -> etree._Element | None:
@@ -575,7 +590,29 @@ class RoutingGroupMembershipService:
             (channel, [state for current, state in main_groups if current == channel])
             for channel in {current for current, _ in main_groups}
         ):
-            if len(candidates) != 1:
+            if len(candidates) == 1:
+                by_channel[channel] = candidates[0]
+                continue
+            confirmed = [
+                state for state in candidates
+                if self._name_confirms_application_group(state, channel)
+            ]
+            if len(confirmed) == 1:
+                selected = confirmed[0]
+                by_channel[channel] = selected
+                excluded = [state for state in candidates if state is not selected]
+                problems.append(self._problem(
+                    "PDUR_ROUTING_GROUP_SECONDARY_GROUP_IGNORED",
+                    f"目标通道“{channel}”存在多个完整 CanIf 路由组；已由真实成员通道和"
+                    f"组名交叉确认正式应用组“{selected.name}”（{selected.path}）。其余专项组"
+                    f" {[(state.name, state.path) for state in excluded]} 不参与普通 ADD 归属，"
+                    "原成员保持不变。",
+                    SourceLocation(),
+                    warning=True,
+                    baseline=True,
+                    affected_channels=(channel,),
+                ))
+            else:
                 problems.append(self._problem(
                     "PDUR_ROUTING_GROUP_CHANNEL_AMBIGUOUS",
                     f"目标通道“{channel}”被多个应用路由组判定为主通道："
@@ -584,8 +621,6 @@ class RoutingGroupMembershipService:
                     baseline=True,
                     affected_channels=(channel,),
                 ))
-            else:
-                by_channel[channel] = candidates[0]
         for state, member, main, channel, message, can_id in deviations:
             can_id_text = f"0x{can_id:X}" if can_id is not None else "<无效>"
             problems.append(self._problem(

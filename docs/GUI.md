@@ -2,7 +2,7 @@
 
 ## 启动
 
-将 `davinci-gw-gui-0.3.5-win-x64.zip` 完整解压到本地目录，双击 `davinci-gw-gui.exe`。程序是免安装 Windows x64 桌面应用，不需要 Python、PATH 或网络连接。不要只从压缩包中单独拖出 EXE；同目录的 `_internal` 是运行所需文件。
+将 `davinci-gw-gui-0.3.6-win-x64.zip` 完整解压到本地目录，双击 `davinci-gw-gui.exe`。程序是免安装 Windows x64 桌面应用，不需要 Python、PATH 或网络连接。不要只从压缩包中单独拖出 EXE；同目录的 `_internal` 是运行所需文件。
 
 安装目录可以只读。窗口位置和最近浏览目录保存在当前 Windows 用户设置中，日志位于 `%LOCALAPPDATA%\DaVinciGW\logs\gui.log`；不会把配置表内容、ARXML 内容或完整问题列表写入日志。
 

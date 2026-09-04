@@ -53,6 +53,12 @@ class IssueTableModel(QAbstractTableModel):
             return "请核对基线 ARXML 中该路由组成员的实际归属；工具不会自动迁移"
         if issue.code == "PDUR_ROUTING_GROUP_NON_CANIF_MEMBERS_IGNORED":
             return "无需修改配置表；工具已排除该成员，如需确认请核对基线 ARXML"
+        if issue.code == "PDUR_ROUTING_GROUP_SECONDARY_GROUP_IGNORED":
+            return "无需修改配置表；专项组保持不变，普通新增使用已确认的应用组"
+        if issue.code == "DIRECT_SOURCE_TYPE_FROM_BASELINE":
+            return "无需处理；工具采用完整既有源 Rx 的基准类型且不会修改该对象"
+        if issue.code in {"DIRECT_DELETE_NOT_FOUND", "SIGNAL_DELETE_NOT_FOUND"}:
+            return "无需处理；目标路由已经不存在，本次按幂等语义跳过"
         if issue.field_name:
             return f"请检查“{issue.field_name}”后重新预览"
         return "请按说明检查输入后重新预览"

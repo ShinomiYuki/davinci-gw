@@ -18,6 +18,10 @@ from davinci_gw.modules.common import definition_ref, semantic_values
 
 from .routing_group_membership import RoutingGroupMembershipService, RoutingGroupModelError
 
+SUPPORTED_CAN_TYPES = {
+    "STANDARD_CAN", "STANDARD_FD_CAN", "EXTENDED_CAN", "EXTENDED_FD_CAN",
+}
+
 
 class DirectSemanticState(str, Enum):
     """语义定位结果；冲突和歧义必须阻断，不能降级为缺失。"""
@@ -174,14 +178,20 @@ class DirectRouteSemanticLocator:
         conflicts = parameter_conflicts + reference_conflicts
         return matched_parameters and matched_references, "；".join(conflicts)
 
-    def _locate_source(self, route: DirectRouteChange, hrh_path: str) -> SourceResolution:
+    def _locate_source(
+        self,
+        route: DirectRouteChange,
+        hrh_path: str,
+        *,
+        accept_configured_can_type: bool,
+    ) -> SourceResolution:
         key = route.key
         related: list[str] = []
         conflicts: list[str] = []
+        configured_type_notes: dict[str, str] = {}
         chains: dict[tuple[str, str, str, str], DirectSourceChain] = {}
         expected_parameters = {
             defs.CANIF_RX_CAN_ID: str(key.source_can_id),
-            defs.CANIF_RX_CAN_ID_TYPE: route.source_message_type or "",
             defs.CANIF_RX_DLC: str(route.source_length),
             defs.CANIF_RX_INDICATION_NAME: "PduR_CanIfRxIndication",
             defs.CANIF_RX_INDICATION_UL: route.source_rx_indication_ul or "",
@@ -200,7 +210,20 @@ class DirectRouteSemanticLocator:
                 continue
             canif_path = autosar_path(canif, self.namespace)
             related.append(canif_path)
-            matched, differences = _required_values_match(parameters, expected_parameters)
+            actual_types = parameters.get(defs.CANIF_RX_CAN_ID_TYPE, ())
+            candidate_expected = dict(expected_parameters)
+            # ADD 只新增目标腿时不会改写完整既有 Rx。报文名、CAN ID、HRH 和
+            # PDU 引用仍必须唯一一致；仅 CAN 类型允许采用基准现值，避免标准表的
+            # 默认 STANDARD_CAN 否定 DBC 已配置的 STANDARD_FD_CAN。
+            if not (
+                accept_configured_can_type
+                and len(actual_types) == 1
+                and actual_types[0] in SUPPORTED_CAN_TYPES
+            ):
+                candidate_expected[defs.CANIF_RX_CAN_ID_TYPE] = (
+                    route.source_message_type or ""
+                )
+            matched, differences = _required_values_match(parameters, candidate_expected)
             pdu_refs = references.get(defs.CANIF_RX_PDU_REF, ())
             if not same_id or not same_name or not matched or len(pdu_refs) != 1:
                 conflicts.append(
@@ -246,6 +269,15 @@ class DirectRouteSemanticLocator:
                     autosar_path(path, self.namespace),
                 )
                 chains[(chain.canif_path, chain.ecuc_path, chain.source_pdu_path, chain.routing_path)] = chain
+                if (
+                    accept_configured_can_type
+                    and actual_types != (route.source_message_type or "",)
+                ):
+                    configured_type_notes[chain.canif_path] = (
+                        f"完整既有源 CanIfRxPdu“{chain.canif_path}”的报文类型为"
+                        f"“{actual_types[0]}”，配置表填写“{route.source_message_type}”；"
+                        "本次 ADD 采用基准 ARXML 现值且不修改源 Rx。"
+                    )
             if not found_chain:
                 conflicts.append(f"{canif_path}：没有完整的 CanIf PduRSrcPdu 源链")
         if conflicts:
@@ -261,7 +293,12 @@ class DirectRouteSemanticLocator:
                 candidates=tuple(sorted(chain.routing_path for chain in chains.values())),
                 detail="同一源报文定位到多条完整 PduR 源链",
             )
-        return SourceResolution(DirectSemanticState.FOUND, next(iter(chains.values())))
+        chain = next(iter(chains.values()))
+        return SourceResolution(
+            DirectSemanticState.FOUND,
+            chain,
+            detail=configured_type_notes.get(chain.canif_path, ""),
+        )
 
     def _ordinary_application_destinations(self, ecuc_path: str) -> tuple[str, ...]:
         application_mapping, _ = self.routing_groups.application_group_mapping()
@@ -490,13 +527,18 @@ class DirectRouteSemanticLocator:
         ))
 
     def locate(
-        self, route: DirectRouteChange, *, hrh_path: str, buffer_path: str,
+        self,
+        route: DirectRouteChange,
+        *,
+        hrh_path: str,
+        buffer_path: str,
+        accept_configured_source_can_type: bool = False,
     ) -> DirectRouteSemanticResult:
         """返回独立的源链、目标端点和当前源路径目标腿定位结果。"""
         source_key = (
             route.key.source_message_name, route.key.source_can_id, route.key.source_channel,
             route.source_length, route.source_message_type, route.source_rx_indication_ul,
-            route.source_dlc_check_enabled, hrh_path,
+            route.source_dlc_check_enabled, hrh_path, accept_configured_source_can_type,
         )
         target_key = (
             route.key.target_message_name, route.key.target_can_id, route.key.target_channel,
@@ -505,7 +547,11 @@ class DirectRouteSemanticLocator:
         )
         source = self._source_cache.get(source_key)
         if source is None:
-            source = self._locate_source(route, hrh_path)
+            source = self._locate_source(
+                route,
+                hrh_path,
+                accept_configured_can_type=accept_configured_source_can_type,
+            )
             self._source_cache[source_key] = source
         target = self._target_cache.get(target_key)
         if target is None:

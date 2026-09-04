@@ -22,14 +22,17 @@ from davinci_gw.modules.ecuc_editor import EcucEditor
 from davinci_gw.modules.pdur_editor import PduREditor
 
 from .naming import direct_source_name, direct_target_name, pdur_leg_name, pdur_path_name
-from .direct_route_locator import DirectRouteSemanticLocator, DirectSemanticState
+from .direct_route_locator import (
+    SUPPORTED_CAN_TYPES,
+    DirectRouteSemanticLocator,
+    DirectSemanticState,
+)
 from .routing_group_membership import (
     RoutingGroupMembershipProblem,
     RoutingGroupMembershipRequest,
     RoutingGroupMembershipService,
 )
 
-SUPPORTED_CAN_TYPES = {"STANDARD_CAN", "STANDARD_FD_CAN", "EXTENDED_CAN", "EXTENDED_FD_CAN"}
 SUPPORTED_LENGTH_STRATEGIES = {"IGNORE", "SHORTEN", "DISCARD"}
 SUPPORTED_SWITCHES = {"ENABLE", "DISABLE"}
 
@@ -273,7 +276,10 @@ class DirectRoutePlanner:
             locations = _locations(group)
             first_target, first_buffer = prepared_targets[0]
             first_semantic = self.locator.locate(
-                first_target, hrh_path=hrh_path or "", buffer_path=first_buffer,
+                first_target,
+                hrh_path=hrh_path or "",
+                buffer_path=first_buffer,
+                accept_configured_source_can_type=True,
             )
             source_resolution = first_semantic.source
             if source_resolution.state in {
@@ -290,6 +296,14 @@ class DirectRoutePlanner:
                 ))
                 skipped += len(prepared_targets)
                 continue
+            if source_resolution.detail:
+                issues.append(_issue(
+                    self.workbook,
+                    route,
+                    "DIRECT_SOURCE_TYPE_FROM_BASELINE",
+                    source_resolution.detail,
+                    warning=True,
+                ))
 
             source_operations: list[MutationOperation] = []
             if source_resolution.state is DirectSemanticState.FOUND:
@@ -345,7 +359,10 @@ class DirectRoutePlanner:
             group_added = 0
             for target, buffer_path in prepared_targets:
                 semantic = self.locator.locate(
-                    target, hrh_path=hrh_path or "", buffer_path=buffer_path,
+                    target,
+                    hrh_path=hrh_path or "",
+                    buffer_path=buffer_path,
+                    accept_configured_source_can_type=True,
                 )
                 if semantic.leg.state in {
                     DirectSemanticState.PARTIAL_CONFLICT, DirectSemanticState.AMBIGUOUS,

@@ -11,7 +11,7 @@ from davinci_gw.application.generate import generate_inputs
 from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.arxml.index import autosar_path
 from davinci_gw.modules import definitions as defs
-from davinci_gw.modules.common import definition_ref
+from davinci_gw.modules.common import definition_ref, semantic_values
 from davinci_gw.domain.models import MutationKind
 from tests.conftest import direct_row
 
@@ -28,6 +28,17 @@ def _named(
         if node.findtext(f"{{{namespace}}}SHORT-NAME") == short_name
         and definition_ref(node, namespace) == definition
     )
+
+
+def _set_parameter(
+    node: etree._Element, namespace: str, definition: str, value: str,
+) -> None:
+    parameters = node.find(f"{{{namespace}}}PARAMETER-VALUES")
+    entry = next(
+        item for item in parameters
+        if item.findtext(f"{{{namespace}}}DEFINITION-REF") == definition
+    )
+    entry.find(f"{{{namespace}}}VALUE").text = value
 
 
 def _rename_generated_objects(path: Path, *, opaque_destination: bool = False) -> str:
@@ -246,6 +257,113 @@ def test_add_blocks_local_self_transmit_endpoint_without_pdur_evidence(
     assert not report.is_success and not output.exists()
     assert "DIRECT_TARGET_ENDPOINT_CONFLICT" in {issue.code for issue in report.errors}
     assert "本地自发/COM" in _messages(report)
+
+
+def test_add_uses_existing_source_can_type_when_only_new_target_leg_is_added(
+    workbook_factory, arxml_factory, tmp_path: Path,
+) -> None:
+    """完整既有 Rx 的 CAN 类型以 ARXML 为准，新增目标腿不得回写源端。"""
+    baseline_config = workbook_factory(filename="source_type_base_v4.84.xlsx", signal_rows=())
+    baseline = tmp_path / "source_type_base.arxml"
+    assert generate_inputs(baseline_config, arxml_factory(), baseline).is_success
+    tree = etree.parse(str(baseline))
+    namespace = etree.QName(tree.getroot()).namespace
+    source_rx = _named(tree, namespace, "GWT_SRC_MSG_SRC_Rx", defs.CANIF_RX)
+    _set_parameter(source_rx, namespace, defs.CANIF_RX_CAN_ID_TYPE, "STANDARD_FD_CAN")
+    tree.write(str(baseline), encoding="UTF-8", xml_declaration=True)
+
+    new_leg = direct_row(**{
+        "目标网段报文名称": "DST_MSG_2",
+        "目标网段报文CANID": "0x201",
+    })
+    output = tmp_path / "source_type_output.arxml"
+    report = generate_inputs(
+        workbook_factory(
+            filename="source_type_new_v4.84.xlsx",
+            direct_rows=(new_leg,),
+            signal_rows=(),
+        ),
+        baseline,
+        output,
+    )
+
+    assert report.is_success, _messages(report)
+    assert report.plan.direct_added_count == 1
+    assert "DIRECT_SOURCE_TYPE_FROM_BASELINE" in {
+        issue.code for issue in report.warnings
+    }
+    generated = ArxmlDocument.load(output)
+    generated_source = _named(
+        etree.ElementTree(generated.root), generated.namespace,
+        "GWT_SRC_MSG_SRC_Rx", defs.CANIF_RX,
+    )
+    parameters, _ = semantic_values(generated_source, generated.namespace)
+    assert parameters[defs.CANIF_RX_CAN_ID_TYPE] == ("STANDARD_FD_CAN",)
+
+
+def test_delete_keeps_strict_source_can_type_matching(
+    workbook_factory, arxml_factory, tmp_path: Path,
+) -> None:
+    """采用基准源类型只属于 ADD；DELETE 仍须按原参数精确定位旧路由。"""
+    config = workbook_factory(filename="strict_delete_base_v4.84.xlsx", signal_rows=())
+    baseline = tmp_path / "strict_delete_base.arxml"
+    assert generate_inputs(config, arxml_factory(), baseline).is_success
+    tree = etree.parse(str(baseline))
+    namespace = etree.QName(tree.getroot()).namespace
+    source_rx = _named(tree, namespace, "GWT_SRC_MSG_SRC_Rx", defs.CANIF_RX)
+    _set_parameter(source_rx, namespace, defs.CANIF_RX_CAN_ID_TYPE, "STANDARD_FD_CAN")
+    tree.write(str(baseline), encoding="UTF-8", xml_declaration=True)
+
+    output = tmp_path / "strict_delete_output.arxml"
+    report = generate_inputs(
+        workbook_factory(
+            filename="strict_delete_v4.84.xlsx",
+            direct_rows=(direct_row(**{"操作类型": "DELETE"}),),
+            signal_rows=(),
+        ),
+        baseline,
+        output,
+    )
+
+    assert not report.is_success
+    assert not output.exists()
+    assert "DIRECT_DELETE_SOURCE_SEMANTIC_CONFLICT" in {
+        issue.code for issue in report.errors
+    }
+
+
+def test_add_does_not_accept_invalid_existing_source_can_type(
+    workbook_factory, arxml_factory, tmp_path: Path,
+) -> None:
+    """基准优先仅适用于受支持的 CAN 类型，损坏枚举不能被静默接纳。"""
+    config = workbook_factory(filename="invalid_source_type_base_v4.84.xlsx", signal_rows=())
+    baseline = tmp_path / "invalid_source_type_base.arxml"
+    assert generate_inputs(config, arxml_factory(), baseline).is_success
+    tree = etree.parse(str(baseline))
+    namespace = etree.QName(tree.getroot()).namespace
+    source_rx = _named(tree, namespace, "GWT_SRC_MSG_SRC_Rx", defs.CANIF_RX)
+    _set_parameter(source_rx, namespace, defs.CANIF_RX_CAN_ID_TYPE, "BROKEN_CAN_TYPE")
+    tree.write(str(baseline), encoding="UTF-8", xml_declaration=True)
+
+    output = tmp_path / "invalid_source_type_output.arxml"
+    report = generate_inputs(
+        workbook_factory(
+            filename="invalid_source_type_v4.84.xlsx",
+            direct_rows=(direct_row(**{
+                "目标网段报文名称": "DST_MSG_2",
+                "目标网段报文CANID": "0x201",
+            }),),
+            signal_rows=(),
+        ),
+        baseline,
+        output,
+    )
+
+    assert not report.is_success
+    assert not output.exists()
+    assert "DIRECT_SOURCE_CHAIN_CONFLICT" in {
+        issue.code for issue in report.errors
+    }
 
 
 def test_add_blocks_local_receive_endpoint_without_pdur_source_chain(

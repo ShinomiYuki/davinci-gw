@@ -108,6 +108,30 @@ def test_state_output_and_issue_message_identity_rules(tmp_path: Path, workbook_
         "无需修改配置表；工具已排除该成员，如需确认请核对基线 ARXML"
     )
 
+    for code, advice in (
+        (
+            "PDUR_ROUTING_GROUP_SECONDARY_GROUP_IGNORED",
+            "无需修改配置表；专项组保持不变，普通新增使用已确认的应用组",
+        ),
+        (
+            "DIRECT_SOURCE_TYPE_FROM_BASELINE",
+            "无需处理；工具采用完整既有源 Rx 的基准类型且不会修改该对象",
+        ),
+        (
+            "SIGNAL_DELETE_NOT_FOUND",
+            "无需处理；目标路由已经不存在，本次按幂等语义跳过",
+        ),
+    ):
+        warning = issues_to_dto((ValidationIssue(
+            code,
+            "无需人工修正的提示",
+            severity=ValidationSeverity.WARNING,
+            file_path=Path("baseline.arxml"),
+            location=SourceLocation(),
+        ),))[0]
+        model.set_issues((warning,))
+        assert model.index(0, 6).data() == advice
+
 
 def test_feature_cards_are_created_from_dto_without_fixed_ids(qtbot) -> None:
     runner = _FakeRunner()

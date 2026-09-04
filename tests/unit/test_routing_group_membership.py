@@ -102,6 +102,29 @@ def test_two_groups_with_same_main_channel_block_add(
     assert "PDUR_ROUTING_GROUP_CHANNEL_AMBIGUOUS" in {issue.code for issue in report.errors}
 
 
+def test_channel_conflict_uses_application_group_name_only_as_cross_check(
+    workbook_factory, arxml_factory, tmp_path: Path,
+) -> None:
+    """多个结构候选同属一通道时，只用名称交叉确认唯一正式应用组。"""
+    groups = {
+        "PduRRoutingPathGroup_DSTCanApp": (EXISTING_DESTINATION,),
+        "PduRRoutingPathGroup_TEST_200_DSTCan": (EXISTING_DESTINATION,),
+    }
+    output = tmp_path / "formal_and_special_group.arxml"
+    report = generate_inputs(
+        workbook_factory(filename="formal_and_special_v4.84.xlsx", signal_rows=()),
+        arxml_factory(filename="formal_and_special_base.arxml", routing_groups=groups),
+        output,
+    )
+
+    assert report.is_success, _messages(report)
+    assert DESTINATION in _members(output, "PduRRoutingPathGroup_DSTCanApp")
+    assert DESTINATION not in _members(output, "PduRRoutingPathGroup_TEST_200_DSTCan")
+    assert "PDUR_ROUTING_GROUP_SECONDARY_GROUP_IGNORED" in {
+        issue.code for issue in report.warnings
+    }
+
+
 def test_existing_route_add_repairs_missing_membership_but_delete_blocks(
     workbook_factory, arxml_factory, tmp_path: Path,
 ) -> None:

@@ -76,6 +76,59 @@ def test_direct_delete_is_idempotent_when_route_is_absent(
     assert "已不存在" in _messages(report)
 
 
+def test_signal_delete_is_idempotent_when_dbc_endpoint_and_mapping_are_absent(
+    workbook_factory: object, arxml_factory: object, tmp_path: Path,
+) -> None:
+    """DBC 已移除源端且没有遗留 Mapping 时，DELETE 应安全视为已不存在。"""
+    baseline = arxml_factory(filename="signal_dbc_missing.arxml")
+    tree = etree.parse(str(baseline))
+    namespace = etree.QName(tree.getroot()).namespace
+    for node in tuple(tree.getroot().iter()):
+        if definition_ref(node, namespace) not in {defs.COM_IPDU, defs.COM_SIGNAL}:
+            continue
+        name = node.findtext(f"{{{namespace}}}SHORT-NAME") or ""
+        if name in {"SRC_MSG_oSRC_Rx", "SRC_SIG_oSRC_MSG_oSRC_Rx"}:
+            node.getparent().remove(node)
+    tree.write(str(baseline), encoding="UTF-8", xml_declaration=True)
+
+    output = tmp_path / "signal_dbc_missing_output.arxml"
+    report = generate_inputs(
+        workbook_factory(direct_rows=(), signal_rows=(_delete_signal(),)), baseline, output,
+    )
+
+    assert report.is_success, _messages(report)
+    assert output.exists()
+    assert report.plan.signal_missing_count == 1
+    assert "相关 ComGwMapping 引用均已不存在" in _messages(report)
+
+
+def test_signal_delete_blocks_when_missing_dbc_endpoint_has_dangling_mapping_reference(
+    workbook_factory: object, generated_arxml_factory: object, tmp_path: Path,
+) -> None:
+    """端点被删但 Mapping 仍引用旧信号时必须阻断，不能把悬空路由当作幂等成功。"""
+    baseline = generated_arxml_factory(signal_rows=(signal_row(),))
+    tree = etree.parse(str(baseline))
+    namespace = etree.QName(tree.getroot()).namespace
+    for node in tuple(tree.getroot().iter()):
+        if definition_ref(node, namespace) not in {defs.COM_IPDU, defs.COM_SIGNAL}:
+            continue
+        name = node.findtext(f"{{{namespace}}}SHORT-NAME") or ""
+        if name in {"SRC_MSG_oSRC_Rx", "SRC_SIG_oSRC_MSG_oSRC_Rx"}:
+            node.getparent().remove(node)
+    tree.write(str(baseline), encoding="UTF-8", xml_declaration=True)
+
+    output = tmp_path / "signal_dangling_mapping_output.arxml"
+    report = generate_inputs(
+        workbook_factory(direct_rows=(), signal_rows=(_delete_signal(),)), baseline, output,
+    )
+
+    assert not report.is_success
+    assert not output.exists()
+    assert "SIGNAL_DELETE_DANGLING_REFERENCE" in {
+        issue.code for issue in report.errors
+    }
+
+
 def test_one_to_many_direct_delete_keeps_other_leg_and_source_chain(
     workbook_factory: object, generated_arxml_factory: object, tmp_path: Path,
 ) -> None:

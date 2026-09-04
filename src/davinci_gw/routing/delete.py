@@ -671,7 +671,26 @@ class DeleteCoordinator:
         state, ipdu, signal_node, candidate_count = self.com.locate_signal_endpoint(
             message, signal, network, direction,
         )
-        if state in {"IPDU_MISSING", "IPDU_AMBIGUOUS"}:
+        if state == "IPDU_MISSING":
+            remaining_references = self.com.gateway_references_for_signal_identity(
+                message, signal, direction,
+            )
+            if not remaining_references:
+                self.issues.append(_issue(
+                    self.workbook, route, "SIGNAL_DELETE_NOT_FOUND",
+                    f"{role} ComIPdu（报文“{message}”、网段“{network}”、方向“{direction}”）"
+                    "及相关 ComGwMapping 引用均已不存在，本条 DELETE 幂等跳过。",
+                    warning=True,
+                ))
+                return None
+            self.issues.append(_issue(
+                self.workbook, route, "SIGNAL_DELETE_DANGLING_REFERENCE",
+                f"{role} ComIPdu（报文“{message}”、网段“{network}”、方向“{direction}”）"
+                f"不存在，但仍发现匹配的 ComGwMapping 引用 {list(remaining_references)}。"
+                "为避免遗留悬空路由，本次阻止输出。",
+            ))
+            return None
+        if state == "IPDU_AMBIGUOUS":
             self.issues.append(_issue(
                 self.workbook, route, "SIGNAL_DELETE_IPDU_UNRESOLVED",
                 f"{role} ComIPdu（报文“{message}”、网段“{network}”、方向“{direction}”）"
@@ -689,8 +708,10 @@ class DeleteCoordinator:
 
     def _match_signal(self, route: SignalRouteChange) -> _SignalMatch | None:
         source_signal = self._locate_signal_endpoint(route, source=True)
+        if source_signal is None:
+            return None
         target_signal = self._locate_signal_endpoint(route, source=False)
-        if source_signal is None or target_signal is None:
+        if target_signal is None:
             return None
         source_path = autosar_path(source_signal, self.document.namespace)
         target_path = autosar_path(target_signal, self.document.namespace)
