@@ -92,6 +92,23 @@ def _diagnose(
     return coordinator, record
 
 
+def test_session_root_prefers_localappdata_without_evaluating_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_app_data = tmp_path / "local-app-data"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+
+    def unexpected_home() -> Path:
+        raise AssertionError("已有 LOCALAPPDATA 时不应读取 HOME/USERPROFILE")
+
+    monkeypatch.setattr(Path, "home", unexpected_home)
+    coordinator = RepairCoordinator(
+        facade=_Facade(OperationStatus.SUCCESS),
+        agent=_Agent(AgentDiagnosis(FailureKind.NONE, "无问题")),
+    )  # type: ignore[arg-type]
+    assert coordinator.session_root == (local_app_data / "DaVinciGW" / "repair-sessions").resolve()
+
+
 def test_success_and_dbc_skip_never_enter_auto_repair(tmp_path: Path) -> None:
     agent = _Agent(AgentDiagnosis(FailureKind.TOOL_BUG, "不应调用"))
     _, success = _diagnose(tmp_path / "success", _Facade(OperationStatus.SUCCESS), agent)

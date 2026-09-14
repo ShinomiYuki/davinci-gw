@@ -118,9 +118,13 @@ class RepairCoordinator:
     ) -> None:
         self.facade = facade or GatewayFacade()
         self.agent = agent or CodexRepairAgent()
-        root = session_root or Path(os.environ.get(
-            "LOCALAPPDATA", str(Path.home() / "AppData" / "Local"),
-        )) / "DaVinciGW" / "repair-sessions"
+        if session_root is not None:
+            root = session_root
+        else:
+            local_app_data = os.environ.get("LOCALAPPDATA")
+            # 不提前求值 Path.home()，确保 onedir 在无 USERPROFILE 的隔离环境也能启动。
+            local_root = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+            root = local_root / "DaVinciGW" / "repair-sessions"
         self.session_root = root.resolve()
         self.diagnoses: dict[str, DiagnosisRecord] = {}
         self.repairs: dict[str, RepairRecord] = {}

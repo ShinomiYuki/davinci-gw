@@ -121,6 +121,7 @@ def test_multiple_exe_sessions_do_not_create_mei_directories(tmp_path: Path) -> 
     ) for _ in range(3)]
     try:
         time.sleep(3)
+        assert all(process.poll() is None for process in processes)
         after = {item.name for item in tmp_path.glob("_MEI*")}
         assert after == before
     finally:
