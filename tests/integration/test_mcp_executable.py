@@ -82,7 +82,7 @@ def test_exe_runs_full_stdio_flow_without_python_or_source_paths(
 
 
 @pytest.mark.slow
-def test_exe_has_no_tcp_connections_and_exits_cleanly_on_eof(tmp_path: Path) -> None:
+def test_exe_has_no_external_tcp_or_listener_and_exits_cleanly_on_eof(tmp_path: Path) -> None:
     executable = _executable()
     process = subprocess.Popen(
         [str(executable)], cwd=tmp_path, env=_isolated_environment(tmp_path),
@@ -90,11 +90,22 @@ def test_exe_has_no_tcp_connections_and_exits_cleanly_on_eof(tmp_path: Path) -> 
     )
     try:
         time.sleep(3)
+        assert process.poll() is None
         powershell = shutil.which("pwsh")
         if powershell:
+            # Windows Proactor 事件循环会建立同进程互为反向的回环唤醒套接字；
+            # 这里只允许该内部配对和 Bound 状态，监听、外连及非配对连接仍视为违规。
+            connection_check = (
+                f"$c=@(Get-NetTCPConnection -OwningProcess {process.pid} -ErrorAction SilentlyContinue);"
+                "$bad=0;foreach($x in $c){if($x.State -eq 'Bound'){continue};"
+                "if($x.State -eq 'Established'){"
+                "$reverse=@($c|Where-Object{$_.LocalAddress -eq $x.RemoteAddress -and "
+                "$_.LocalPort -eq $x.RemotePort -and $_.RemoteAddress -eq $x.LocalAddress -and "
+                "$_.RemotePort -eq $x.LocalPort}).Count;if($reverse -gt 0){continue}};$bad++};$bad"
+            )
             query = subprocess.run(
                 [powershell, "-NoProfile", "-NonInteractive", "-Command",
-                 f"@(Get-NetTCPConnection -OwningProcess {process.pid} -ErrorAction SilentlyContinue).Count"],
+                 connection_check],
                 check=True, capture_output=True, text=True, timeout=15,
             )
             assert query.stdout.strip() == "0"
