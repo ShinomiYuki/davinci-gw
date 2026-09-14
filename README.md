@@ -24,7 +24,7 @@
 
 ## Windows 桌面版
 
-第06轮提供 `davinci-gw-gui.exe` 免安装桌面程序。普通用户解压 ZIP 后直接双击 EXE，不需要安装 Python，也不需要配置 PATH。界面按“选择配置表 → 选择基准 ARXML → 预览 → 生成”工作：预览成功后复用同一份内存事务生成，不会再次解析大型基准文件。
+提供 `davinci-gw-gui.exe` 免安装桌面程序。用户解压 ZIP 后直接双击 EXE，不需要安装 Python，也不需要配置 PATH。界面按“选择配置表 → 选择基准 ARXML → 预览 → 生成”工作：预览成功后复用同一份内存事务生成，不会再次解析大型基准文件。
 
 界面支持浏览与拖放、自动建议不重名输出、动态路由统计、问题搜索/筛选/复制、协作式取消和安全关闭。输入文件始终只读，输出不能指向基准，也默认拒绝覆盖已有文件。运行日志位于 `%LOCALAPPDATA%\DaVinciGW\logs\gui.log`，只记录阶段、耗时、状态和异常类型，不记录 Excel/XML 内容。
 
@@ -32,22 +32,27 @@
 
 ## 本地 MCP 服务
 
-第05轮提供 `davinci-gw-mcp.exe`：一个无窗口、纯本地、长生命周期的 STDIO MCP 服务，可由 Codex 等支持本地 STDIO MCP 的 AI 客户端启动。它不监听端口，不提供 HTTP/SSE/WebSocket，不登录云服务，不上传文件，也不包含自动更新或遥测。
+MCP 1.0 提供 Windows x64 `onedir` STDIO 服务。多个对话共用安装目录中的 `_internal`，不为每次启动生成数百 MB 的 `_MEI*` 临时目录；对外是一个 ZIP，解压和安装时必须保留完整目录。普通校验、预览和生成保持本地运行，不监听端口，也不上传 Excel 或 ARXML。
 
-服务只有四个工具：
+服务包含生成工作流和经审批的故障修复工作流：
 
 - `get_gateway_capabilities`：查询版本、能力和安全策略。
 - `validate_gateway_inputs`：只读校验配置表与基准 ARXML。
 - `preview_gateway_update`：完整预览并返回当前进程内的一次性 `preparation_id`。
 - `generate_gateway_arxml`：用户确认预览后，使用 `preparation_id` 生成一个新的 ARXML。
+- `diagnose_generation_failure`：先复现并区分 DBC 缺失、输入、基线、工具 BUG 或不确定。
+- `start_bug_repair`、`get_bug_repair_status`：经第一次确认后，在隔离 worktree 自动修复并查询状态。
+- `submit_bug_repair`、`cancel_bug_repair`：经第二次确认后提交，或保留现场取消。
 
 固定工作流是 `validate → preview → 用户确认 → generate`。生成工具不接受配置表或基准路径，不能绕过预览；`preparation_id` 不能跨 MCP 进程使用。所有路径必须是带盘符的本地 Windows 绝对路径，URL、UNC、设备路径、命名管道和网络共享会被拒绝。输出目录必须已存在，输出文件必须尚不存在，且不得通过大小写、规范化、符号链接或目录联接指向基准 ARXML。
 
 MCP 只返回有界 JSON 摘要、问题定位和输出文件的大小/SHA-256，不返回 Excel 或 ARXML 内容。标准输出仅用于 MCP 协议；诊断日志位于 `%LOCALAPPDATA%\DaVinciGW\logs\mcp.log`。完整安装、Codex 配置、审批和卸载说明见 [MCP 本地安装与使用](docs/MCP本地安装与使用.md)。
 
+自动修复只在保留完整源码和 Git 仓库的开发机上启用。只有稳定复现并有代码证据的工具 BUG 才能进入修复；DBC 缺失行继续跳过，输入、基线和不确定问题不会改代码。创建热修复 worktree 与正式提交/推送是两次独立确认，未经第二次确认不会合并、打标或发布。
+
 ## 公共应用接口
 
-第04轮提供了供未来 GUI 与本地 MCP 共同依赖的 `GatewayFacade`。它不依赖 Qt、MCP 协议或 lxml 类型，所有返回值都是冻结的公共 DTO，可通过 `to_dict()` 或 `to_json()` 得到稳定的 JSON 数据。
+提供 GUI 与本地 MCP 共同依赖的 `GatewayFacade`。不依赖 Qt、MCP 协议或 lxml 类型，所有返回值都是冻结的公共 DTO，可通过 `to_dict()` 或 `to_json()` 得到稳定的 JSON 数据。
 
 ```python
 from davinci_gw.application import GatewayFacade
@@ -164,8 +169,8 @@ LIN 信号端点不使用 `PSMM ↔ LIN04` 之类的固定项目映射。当配�
 - 任一规划、应用、序列化或临时输出验证失败，整个工作副本丢弃，不修改基准，不留目标或临时半成品。
 - 输出会重新解析，复核四模块、新增/删除/保留语义、参数删除、内部引用、UUID 和 Handle ID。
 
-完整字段规则见 [输入契约](docs/输入契约.md)，删除设计见 [第03轮开发日志](docs/第03轮开发日志.md)，公共接口与扩展架构见 [第04轮开发日志](docs/第04轮开发日志.md)，MCP 的交付证据见 [第05轮开发日志](docs/第05轮开发日志.md)，桌面版交付证据见 [第06轮开发日志](docs/第06轮开发日志.md)，引用级成员能力见 [第07轮开发日志](docs/第07轮开发日志.md)，动态路由组与语义定位见 [第08轮开发日志](docs/第08轮开发日志.md)，信号 Access 与基线告警修正见 [第09轮开发日志](docs/第09轮开发日志.md)，既有路由语义识别与自发报文隔离见 [第10轮开发日志](docs/第10轮开发日志.md)，路由组分类和错误作用域修复见 [第11轮开发日志](docs/第11轮开发日志.md)，缺失 DBC 删除与专项路由组识别见 [第12轮开发日志](docs/第12轮开发日志.md)。
+完整字段规则见 [输入契约](docs/输入契约.md)，删除设计见 [第03轮开发日志](docs/第03轮开发日志.md)，公共接口与扩展架构见 [第04轮开发日志](docs/第04轮开发日志.md)，MCP 的安装和使用见 [MCP 本地安装与使用](docs/MCP本地安装与使用.md)，桌面版交付证据见 [第06轮开发日志](docs/第06轮开发日志.md)，引用级成员能力见 [第07轮开发日志](docs/第07轮开发日志.md)，动态路由组与语义定位见 [第08轮开发日志](docs/第08轮开发日志.md)，信号 Access 与基线告警修正见 [第09轮开发日志](docs/第09轮开发日志.md)，既有路由语义识别与自发报文隔离见 [第10轮开发日志](docs/第10轮开发日志.md)，路由组分类和错误作用域修复见 [第11轮开发日志](docs/第11轮开发日志.md)，缺失 DBC 删除与专项路由组识别见 [第12轮开发日志](docs/第12轮开发日志.md)，MCP 1.0 自修复与 onedir 发布见 [第13轮开发日志](docs/第13轮开发日志.md)。
 
 ## 许可证
 
-本项目自身使用 [MIT License](LICENSE)。桌面发布包还随附 [第三方软件许可说明](THIRD_PARTY_NOTICES.md) 和相应许可证原文；正式对外交付前仍应完成公司合规或法务审核。
+本项目使用 [MIT License](LICENSE)。桌面发布包还随附 [第三方软件许可说明](THIRD_PARTY_NOTICES.md) 和相应许可证原文。

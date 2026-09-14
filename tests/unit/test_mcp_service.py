@@ -8,6 +8,7 @@ import socket
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,23 @@ from davinci_gw.mcp.runtime import BoundedFacadeRuntime
 from davinci_gw.mcp.server import SERVER_INSTRUCTIONS, build_server
 from davinci_gw.mcp.service import GatewayMcpService
 from davinci_gw.runtime import OperationCancelled
+
+
+class _DiagnosisRepairs:
+    async def diagnose(self, *_args: object) -> object:
+        return SimpleNamespace(
+            summary="已确认属于工具 BUG",
+            issues=(),
+            to_payload=lambda: {
+                "diagnosis_id": "diagnosis",
+                "classification": "TOOL_BUG",
+                "summary": "已确认属于工具 BUG",
+                "repair_eligible": True,
+            },
+        )
+
+    async def close(self) -> None:
+        return None
 
 
 def test_mcp_adapter_has_no_internal_arxml_cli_or_network_dependencies() -> None:
@@ -103,12 +121,19 @@ def test_server_registers_exact_tools_and_safety_annotations() -> None:
         assert set(tools) == {
             "get_gateway_capabilities", "validate_gateway_inputs",
             "preview_gateway_update", "generate_gateway_arxml",
+            "diagnose_generation_failure", "start_bug_repair", "get_bug_repair_status",
+            "submit_bug_repair", "cancel_bug_repair",
         }
         assert tools["get_gateway_capabilities"].annotations.read_only_hint is True
         assert tools["validate_gateway_inputs"].annotations.idempotent_hint is True
         assert tools["preview_gateway_update"].annotations.idempotent_hint is False
         assert tools["generate_gateway_arxml"].annotations.destructive_hint is True
-        assert all(tool.annotations.open_world_hint is False for tool in tools.values())
+        assert tools["diagnose_generation_failure"].annotations.read_only_hint is True
+        assert tools["diagnose_generation_failure"].annotations.open_world_hint is True
+        assert tools["start_bug_repair"].annotations.destructive_hint is True
+        assert tools["submit_bug_repair"].annotations.destructive_hint is True
+        assert tools["cancel_bug_repair"].annotations.destructive_hint is True
+        assert tools["get_bug_repair_status"].annotations.open_world_hint is False
         required = {
             "schema_version", "tool", "operation_id", "status", "success", "summary",
             "issue_count", "issues_truncated", "issues",
@@ -116,6 +141,20 @@ def test_server_registers_exact_tools_and_safety_annotations() -> None:
         assert all(required <= set(tool.output_schema["required"]) for tool in tools.values())
 
     asyncio.run(list_only())
+
+
+def test_diagnosis_result_keeps_summary_without_adapter_failure() -> None:
+    async def scenario() -> None:
+        service = GatewayMcpService(repairs=_DiagnosisRepairs())  # type: ignore[arg-type]
+        try:
+            result = await service.diagnose_generation_failure("a", "b", "c", "d")
+            assert result["status"] == "SUCCESS"
+            assert result["summary"] == "已确认属于工具 BUG"
+            assert result["classification"] == "TOOL_BUG"
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
 
 
 def test_service_requires_preview_then_generates_once(

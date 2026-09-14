@@ -1,4 +1,4 @@
-"""对实际 PyInstaller 单文件 EXE 执行协议、无 Python 环境和退出验证。"""
+"""对实际 PyInstaller onedir EXE 执行协议、无 Python环境和退出验证。"""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ def _executable() -> Path:
     path = Path(configured).resolve()
     if not path.is_file():
         pytest.fail(f"MCP EXE 不存在：{path}")
+    if not (path.parent / "_internal").is_dir():
+        pytest.fail(f"MCP onedir 缺少 _internal：{path.parent}")
     return path
 
 
@@ -60,7 +62,7 @@ def test_exe_runs_full_stdio_flow_without_python_or_source_paths(
                     initialized = await session.initialize()
                     assert initialized.server_info.name == "davinci-gw-mcp"
                     listed = await session.list_tools()
-                    assert len(listed.tools) == 4
+                    assert len(listed.tools) == 9
                     validated = await session.call_tool("validate_gateway_inputs", {
                         "config_path": str(config.resolve()), "baseline_path": str(baseline.resolve()),
                     }, read_timeout_seconds=60)
@@ -88,7 +90,7 @@ def test_exe_has_no_tcp_connections_and_exits_cleanly_on_eof(tmp_path: Path) -> 
     )
     try:
         time.sleep(3)
-        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        powershell = shutil.which("pwsh")
         if powershell:
             query = subprocess.run(
                 [powershell, "-NoProfile", "-NonInteractive", "-Command",
@@ -105,3 +107,29 @@ def test_exe_has_no_tcp_connections_and_exits_cleanly_on_eof(tmp_path: Path) -> 
         if process.poll() is None:
             process.kill()
             process.wait(timeout=10)
+
+
+@pytest.mark.slow
+def test_multiple_exe_sessions_do_not_create_mei_directories(tmp_path: Path) -> None:
+    """onedir 多会话直接复用 _internal，不再向 TEMP 解包数百 MB。"""
+    executable = _executable()
+    environment = _isolated_environment(tmp_path)
+    before = {item.name for item in tmp_path.glob("_MEI*")}
+    processes = [subprocess.Popen(
+        [str(executable)], cwd=tmp_path, env=environment,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ) for _ in range(3)]
+    try:
+        time.sleep(3)
+        after = {item.name for item in tmp_path.glob("_MEI*")}
+        assert after == before
+    finally:
+        for process in processes:
+            if process.stdin:
+                process.stdin.close()
+        for process in processes:
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)

@@ -2,9 +2,9 @@
 
 ## 产品边界
 
-`davinci-gw-mcp.exe` 是 Windows x64 单文件控制台程序。MCP 客户端通过进程的 stdin/stdout 与它通信。服务不会监听 TCP/UDP 端口，不需要 Python、源码目录或 PATH，不下载依赖，不访问云端，也不会把配置表、ARXML 或完整请求写入日志。
+`davinci-gw-mcp.exe` 是 Windows x64 `onedir` 控制台程序。MCP 客户端通过进程的 stdin/stdout 与它通信。多个会话共用安装目录中的 `_internal`，不会再按会话向 TEMP 解包 `_MEI*`。服务本身不需要系统 Python；普通校验、预览和生成不访问云端。只有用户主动调用故障诊断或经确认的自动修复时，才会通过用户现有 Codex 登录使用官方 `openai-codex` SDK。
 
-安装和运行均不需要管理员权限。项目采用 MIT License；发布包包含 EXE、SHA-256、安装/卸载脚本、示例配置、版本和 MIT 许可证。
+安装和运行均不需要管理员权限。项目采用 MIT License；发布 ZIP 包含 EXE、完整 `_internal`、全目录 SHA-256、安装/卸载脚本、示例配置、版本和 MIT 许可证。不能只复制 EXE。
 
 ## 安装
 
@@ -18,10 +18,10 @@ Set-ExecutionPolicy -Scope Process Bypass
 默认安装位置为：
 
 ```text
-%LOCALAPPDATA%\Programs\DaVinciGW\davinci-gw-mcp.exe
+%LOCALAPPDATA%\Programs\DaVinciGW\versions\1.0.0\davinci-gw-mcp.exe
 ```
 
-安装器在复制前核对包内 `SHA256SUMS.txt`。目标已有不同 EXE 时，会先复制到安装目录的 `backups`；相同版本可重复安装。Codex 配置有变化时会在原文件旁创建带 UTC 时间戳的 `.bak`。安装器只维护带以下标记的配置块，不会重写其他配置：
+安装器在复制前核对 `SHA256SUMS.txt` 中的全部文件。每个版本安装到独立目录，升级时 Codex 配置切换到新版本，因此正在运行的旧会话不会阻塞新版本安装；相同版本、相同内容可重复安装。Codex 配置有变化时会在原文件旁创建带 UTC 时间戳的 `.bak`。安装器只维护带以下标记的配置块，不会重写其他配置：
 
 ```text
 # BEGIN DAVINCI_GW_MCP MANAGED BLOCK
@@ -44,7 +44,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ```toml
 [mcp_servers.davinci_gateway]
-command = 'C:\Users\YOUR_NAME\AppData\Local\Programs\DaVinciGW\davinci-gw-mcp.exe'
+command = 'C:\Users\YOUR_NAME\AppData\Local\Programs\DaVinciGW\versions\1.0.0\davinci-gw-mcp.exe'
 startup_timeout_sec = 30
 tool_timeout_sec = 3600
 enabled = true
@@ -53,9 +53,18 @@ default_tools_approval_mode = "writes"
 
 [mcp_servers.davinci_gateway.tools.generate_gateway_arxml]
 approval_mode = "prompt"
+
+[mcp_servers.davinci_gateway.tools.start_bug_repair]
+approval_mode = "prompt"
+
+[mcp_servers.davinci_gateway.tools.submit_bug_repair]
+approval_mode = "prompt"
+
+[mcp_servers.davinci_gateway.tools.cancel_bug_repair]
+approval_mode = "prompt"
 ```
 
-`get_gateway_capabilities`、`validate_gateway_inputs` 和 `preview_gateway_update` 均标记为只读；`generate_gateway_arxml` 标记为 destructive，并显式配置为每次提示。客户端提示生成审批时，应核对预览摘要、`preparation_id` 和新输出路径后再批准。
+`get_gateway_capabilities`、`validate_gateway_inputs`、`preview_gateway_update`、`diagnose_generation_failure` 和 `get_bug_repair_status` 标记为只读；生成、开始修复、提交修复和取消修复均标记为写操作并显式提示。
 
 安装后可执行：
 
@@ -80,6 +89,26 @@ MCP 与 GUI、CLI 使用同一份标准 18 列直接报文输入，不增加路�
 信号 ADD 会同步把实际参与 Mapping 的 Rx、Tx `ComSignalAccess` 设置为 `ACCESS_NEEDED_BY_SWC_OR_COM`；已有 Mapping 重跑时也会补齐旧值。路由组非主成员属于基线 ARXML 警告，每个异常成员只返回一次，不绑定当前 Excel 行或当前目标 DestPdu。
 
 Prepared Session 默认 15 分钟过期、进程内最多 8 个。成功生成后立即消费；失败、取消或进程退出后不能复用。输入文件在预览后发生变化时，生成会安全终止并要求重新预览。
+
+## 失败诊断与自动修复
+
+自动修复只面向保留了完整 `davinci-gw` 源码和 Git 仓库的开发机，还需要传入该开发环境的 Python 路径。发布包内记录了准确构建 commit，热修复从该 commit 创建独立 `hotfix/mcp-auto-*` 分支和 worktree，不会切换或清理主工作区。
+
+失败先调用 `diagnose_generation_failure`。结论严格分为 DBC 缺失、输入问题、基线问题、工具 BUG 和无法确定：DBC 缺失行继续跳过，其他路由仍可生成；输入和基线问题只报告定位；无法确定时继续询问。只有稳定复现且有具体代码证据的工具 BUG 才具有修复资格。
+
+开始修复必须原样确认：
+
+```text
+确认开始工具BUG自动修复
+```
+
+修复会依次完成定位、最小修改、针对性测试、完整差异审查、审查修复、一次最终全量回归、原输入复验、候选包构建和 STDIO/多进程冒烟。成功后停在等待提交状态。正式提交、推送、PR、合并、打标和发布之前，还必须原样确认：
+
+```text
+确认提交工具BUG修复
+```
+
+维护者可以选择合并并发布；外部用户只能推送自己的 fork 并创建 Draft PR。PR 不得包含真实 Excel、ARXML、DBC、LDF、BLF 或其他项目数据。修复失败或取消时会保留 worktree 和报告，主工作区不会被自动 stash、reset 或清理。
 
 ## 路径与输出安全
 
@@ -116,7 +145,7 @@ Prepared Session 默认 15 分钟过期、进程内最多 8 个。成功生成�
 .\uninstall_mcp.ps1
 ```
 
-卸载器只删除安装器管理的配置块、安装 EXE 和安装清单；修改配置前同样备份。它不会递归删除安装根目录，因此历史备份和任何非本产品文件都不会被误删。重复卸载是安全的。
+卸载器会按安装清单逐个校验并删除安装器管理的所有 MCP 版本、配置块和安装清单；修改配置前同样备份。它不会递归删除安装根目录，因此历史备份和任何非本产品文件都不会被误删。完成卸载后重复执行是安全的；清单缺失但 `versions` 仍有文件时会拒绝猜测删除。
 
 ## 从源码构建
 

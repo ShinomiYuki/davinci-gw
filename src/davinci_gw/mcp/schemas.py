@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class GatewayToolResponse(BaseModel):
-    """四工具共享的必需信封；工具专属字段作为受控扩展保留。"""
+    """所有生成与修复工具共享的必需信封；工具专属字段作为受控扩展保留。"""
 
     model_config = ConfigDict(extra="allow")
 

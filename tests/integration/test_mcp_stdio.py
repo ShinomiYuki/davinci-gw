@@ -41,6 +41,8 @@ def test_stdio_protocol_lists_tools_and_completes_prepare_generate(
                     assert [tool.name for tool in listed.tools] == [
                         "get_gateway_capabilities", "validate_gateway_inputs",
                         "preview_gateway_update", "generate_gateway_arxml",
+                        "diagnose_generation_failure", "start_bug_repair",
+                        "get_bug_repair_status", "submit_bug_repair", "cancel_bug_repair",
                     ]
                     capabilities = await session.call_tool("get_gateway_capabilities")
                     assert capabilities.structured_content["status"] == "SUCCESS"

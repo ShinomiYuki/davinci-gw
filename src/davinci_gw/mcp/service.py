@@ -1,4 +1,4 @@
-"""四个 MCP 工具共用的薄应用服务。"""
+"""网关生成与经审批自动修复工具共用的薄应用服务。"""
 
 from __future__ import annotations
 
@@ -7,12 +7,13 @@ from collections import OrderedDict
 from threading import RLock
 from uuid import UUID, uuid4
 
-from davinci_gw import __version__
 from davinci_gw.application import GatewayFacade
 from davinci_gw.contracts import OperationStatus, ProgressEventDto, UpdateRequestDto
 from davinci_gw.mcp.mapping import dto_envelope, envelope, issue
 from davinci_gw.mcp.paths import PathPolicyError, validate_input_file, validate_new_output
 from davinci_gw.mcp.runtime import BoundedFacadeRuntime
+from davinci_gw.mcp.repair_service import RepairContractError, RepairCoordinator
+from davinci_gw.mcp.version import MCP_VERSION, load_build_info
 
 LOGGER = logging.getLogger("davinci_gw.mcp.service")
 
@@ -35,6 +36,7 @@ class GatewayMcpService:
         *,
         facade: GatewayFacade | None = None,
         runtime: BoundedFacadeRuntime | None = None,
+        repairs: RepairCoordinator | None = None,
     ) -> None:
         self.facade = facade or GatewayFacade()
         self.runtime = runtime or BoundedFacadeRuntime()
@@ -43,6 +45,7 @@ class GatewayMcpService:
         self._prepared_baselines: OrderedDict[str, str] = OrderedDict()
         self._lock = RLock()
         self._observer = _ProgressLogObserver()
+        self.repairs = repairs or RepairCoordinator(facade=self.facade)
 
     @staticmethod
     def _path_failure(tool: str, exc: PathPolicyError) -> dict[str, object]:
@@ -73,9 +76,16 @@ class GatewayMcpService:
                 status=OperationStatus.SUCCESS.value,
                 operation_id=str(uuid4()),
                 summary="已返回本地网关配置服务能力。",
-                product={"name": "davinci-gw-mcp", "version": __version__, "transport": "stdio"},
+                product={
+                    "name": "davinci-gw-mcp", "version": MCP_VERSION, "transport": "stdio",
+                    "build": load_build_info(),
+                },
                 features=capabilities.get("features", []),
-                workflow=["validate_gateway_inputs", "preview_gateway_update", "generate_gateway_arxml"],
+                workflow=[
+                    "validate_gateway_inputs", "preview_gateway_update", "generate_gateway_arxml",
+                    "diagnose_generation_failure", "start_bug_repair", "get_bug_repair_status",
+                    "submit_bug_repair", "cancel_bug_repair",
+                ],
                 policies={
                     "local_only": True,
                     "absolute_windows_paths_only": True,
@@ -87,6 +97,10 @@ class GatewayMcpService:
                     "max_response_bytes": 512_000,
                     "prepared_session_ttl_seconds": self._capabilities.session_ttl_seconds,
                     "prepared_session_capacity": self._capabilities.session_capacity,
+                    "repair_requires_source_repository": True,
+                    "repair_start_confirmation": "确认开始工具BUG自动修复",
+                    "repair_submit_confirmation": "确认提交工具BUG修复",
+                    "repair_recursive_start_allowed": False,
                 },
             )
         except Exception as exc:
@@ -199,6 +213,112 @@ class GatewayMcpService:
             LOGGER.error("generate adapter failure error_type=%s", type(exc).__name__)
             return self._adapter_failure(tool)
 
+    @staticmethod
+    def _repair_contract_failure(tool: str, exc: RepairContractError) -> dict[str, object]:
+        return envelope(
+            tool, status=OperationStatus.VALIDATION_FAILED.value, operation_id=str(uuid4()),
+            summary="自动修复流程条件未满足。",
+            issues=[issue("REPAIR_CONTRACT_INVALID", str(exc))],
+        )
+
+    async def diagnose_generation_failure(
+        self,
+        config_path: str,
+        baseline_path: str,
+        repository_path: str,
+        python_path: str,
+    ) -> dict[str, object]:
+        """稳定复现并分类；诊断阶段不创建分支、不写工程文件。"""
+        tool = "diagnose_generation_failure"
+        try:
+            record = await self.repairs.diagnose(
+                config_path, baseline_path, repository_path, python_path,
+            )
+            payload = record.to_payload()
+            payload.pop("summary", None)
+            return envelope(
+                tool, status=OperationStatus.SUCCESS.value, operation_id=str(uuid4()),
+                summary=record.summary, **payload, issues=list(record.issues),
+            )
+        except RepairContractError as exc:
+            return self._repair_contract_failure(tool, exc)
+        except Exception as exc:
+            LOGGER.error("diagnosis adapter failure error_type=%s", type(exc).__name__)
+            return self._adapter_failure(tool)
+
+    async def start_bug_repair(self, diagnosis_id: str, confirmation: str) -> dict[str, object]:
+        """取得第一次明确确认后启动隔离后台修复。"""
+        tool = "start_bug_repair"
+        try:
+            record = await self.repairs.start(diagnosis_id, confirmation)
+            return envelope(
+                tool, status=OperationStatus.SUCCESS.value, operation_id=str(uuid4()),
+                summary="已启动隔离热修复；正式提交仍需第二次确认。", repair=record.to_payload(),
+            )
+        except RepairContractError as exc:
+            return self._repair_contract_failure(tool, exc)
+        except Exception as exc:
+            LOGGER.error("repair start adapter failure error_type=%s", type(exc).__name__)
+            return self._adapter_failure(tool)
+
+    def get_bug_repair_status(self, repair_id: str) -> dict[str, object]:
+        """读取后台修复状态，不推进或提交任务。"""
+        tool = "get_bug_repair_status"
+        try:
+            record = self.repairs.status(repair_id)
+            return envelope(
+                tool, status=OperationStatus.SUCCESS.value, operation_id=str(uuid4()),
+                summary=record.stage, repair=record.to_payload(),
+            )
+        except RepairContractError as exc:
+            return self._repair_contract_failure(tool, exc)
+        except Exception as exc:
+            LOGGER.error("repair status adapter failure error_type=%s", type(exc).__name__)
+            return self._adapter_failure(tool)
+
+    async def submit_bug_repair(
+        self,
+        repair_id: str,
+        confirmation: str,
+        mode: str,
+        commit_message: str,
+        remote_name: str = "origin",
+        upstream_repository: str = "",
+        fork_owner: str = "",
+    ) -> dict[str, object]:
+        """取得第二次明确确认后提交；远程动作由 mode 清晰区分。"""
+        tool = "submit_bug_repair"
+        try:
+            record = await self.repairs.submit(
+                repair_id, confirmation, mode, commit_message, remote_name, upstream_repository, fork_owner,
+            )
+            successful = record.state.value == "COMPLETED"
+            return envelope(
+                tool,
+                status=(OperationStatus.SUCCESS.value if successful else OperationStatus.INTERNAL_FAILURE.value),
+                operation_id=str(uuid4()), summary=record.stage, repair=record.to_payload(),
+            )
+        except RepairContractError as exc:
+            return self._repair_contract_failure(tool, exc)
+        except Exception as exc:
+            LOGGER.error("repair submit adapter failure error_type=%s", type(exc).__name__)
+            return self._adapter_failure(tool)
+
+    async def cancel_bug_repair(self, repair_id: str, confirmation: str) -> dict[str, object]:
+        """明确确认后取消活动任务，保留 worktree 和报告。"""
+        tool = "cancel_bug_repair"
+        try:
+            record = await self.repairs.cancel(repair_id, confirmation)
+            return envelope(
+                tool, status=OperationStatus.SUCCESS.value, operation_id=str(uuid4()),
+                summary=record.stage, repair=record.to_payload(),
+            )
+        except RepairContractError as exc:
+            return self._repair_contract_failure(tool, exc)
+        except Exception as exc:
+            LOGGER.error("repair cancel adapter failure error_type=%s", type(exc).__name__)
+            return self._adapter_failure(tool)
+
     async def close(self) -> None:
         """取消活动调用，释放 Prepared Session 与工作线程。"""
         self.runtime.cancel_active()
@@ -207,4 +327,5 @@ class GatewayMcpService:
             self._prepared_baselines.clear()
         for session_id in session_ids:
             self.facade.discard_prepared(session_id)
+        await self.repairs.close()
         await self.runtime.close()

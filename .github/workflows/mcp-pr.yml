@@ -1,0 +1,51 @@
+name: MCP PR 验证
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    steps:
+      - name: 签出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: davinci-gw-ci
+          python-version: "3.12"
+          auto-activate-base: false
+
+      - name: 安装开发依赖
+        shell: pwsh
+        run: conda run -n davinci-gw-ci python -m pip install -e ".[dev]"
+
+      - name: 代码和完整回归
+        shell: pwsh
+        run: |
+          conda run -n davinci-gw-ci python -m compileall -q src tests
+          conda run -n davinci-gw-ci python -m pytest -q
+
+      - name: 构建 MCP onedir 候选包
+        shell: pwsh
+        run: |
+          $python = (conda run -n davinci-gw-ci python -c "import sys; print(sys.executable)" | Select-Object -Last 1).Trim()
+          ./scripts/build_mcp_release.ps1 -Python $python -Version 1.0.0
+
+      - name: MCP STDIO 与无系统 Python 冒烟
+        shell: pwsh
+        run: |
+          $python = (conda run -n davinci-gw-ci python -c "import sys; print(sys.executable)" | Select-Object -Last 1).Trim()
+          $env:DAVINCI_GW_MCP_EXE = "$PWD\dist\mcp\davinci-gw-mcp\davinci-gw-mcp.exe"
+          & $python -m pytest -q tests/integration/test_mcp_executable.py
+
+      - name: 上传候选包
+        uses: actions/upload-artifact@v4
+        with:
+          name: davinci-gw-mcp-1.0.0-win-x64
+          path: release/davinci-gw-mcp-1.0.0-win-x64.zip
+          if-no-files-found: error

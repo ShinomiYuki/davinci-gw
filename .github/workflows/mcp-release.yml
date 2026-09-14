@@ -1,0 +1,61 @@
+name: 发布 MCP 正式版
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: MCP 版本（本轮必须为 1.0.0）
+        required: true
+        default: "1.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: 签出确定提交
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 准备 Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: davinci-gw-release
+          python-version: "3.12"
+          auto-activate-base: false
+
+      - name: 安装依赖
+        shell: pwsh
+        run: conda run -n davinci-gw-release python -m pip install -e ".[dev]"
+
+      - name: 校验版本并完整回归
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/main') { throw 'MCP 正式版只能从 main 发布' }
+          if ('${{ inputs.version }}' -ne '1.0.0') { throw '本轮只允许发布 MCP 1.0.0' }
+          $sourceVersion = conda run -n davinci-gw-release python -c "from davinci_gw.mcp.version import MCP_VERSION; print(MCP_VERSION)"
+          if ($sourceVersion.Trim() -ne '${{ inputs.version }}') { throw '源码版本与发布输入不一致' }
+          conda run -n davinci-gw-release python -m pytest -q
+
+      - name: 构建并验证 MCP onedir
+        shell: pwsh
+        run: |
+          $python = (conda run -n davinci-gw-release python -c "import sys; print(sys.executable)" | Select-Object -Last 1).Trim()
+          ./scripts/build_mcp_release.ps1 -Python $python -Version '${{ inputs.version }}'
+          $env:DAVINCI_GW_MCP_EXE = "$PWD\dist\mcp\davinci-gw-mcp\davinci-gw-mcp.exe"
+          & $python -m pytest -q tests/integration/test_mcp_executable.py
+
+      - name: 创建标签和 GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'v${{ inputs.version }}'
+          if (git ls-remote --exit-code --tags origin "refs/tags/$tag") { throw "标签已存在：$tag" }
+          gh release create $tag `
+            "release/davinci-gw-mcp-${{ inputs.version }}-win-x64.zip" `
+            "release/davinci-gw-mcp-${{ inputs.version }}-win-x64.zip.sha256" `
+            --target $env:GITHUB_SHA --title "DaVinci GW MCP ${{ inputs.version }}" --generate-notes
