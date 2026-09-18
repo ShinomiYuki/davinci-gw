@@ -28,7 +28,7 @@ from davinci_gw.routing.transaction import TransactionCoordinator
 
 @dataclass(frozen=True)
 class DiagnosticFeature:
-    feature_id: str = "diagnostic_route"
+    feature_id: str = "virtual_test_route"
     display_name: str = "诊断虚拟路由"
     capabilities: tuple[str, ...] = ("PREVIEW",)
 
@@ -42,7 +42,7 @@ class DiagnosticFeature:
 
 def test_virtual_feature_appears_without_facade_or_dto_changes() -> None:
     registry = FeatureRegistry((DiagnosticFeature(),))
-    assert registry.capabilities()[0].feature_id == "diagnostic_route"
+    assert registry.capabilities()[0].feature_id == "virtual_test_route"
     summary = registry.summarize(FeatureContext(None, None))[0]
     assert summary.to_dict()["metrics"][0]["value"] == 7
 
@@ -53,13 +53,13 @@ def test_virtual_feature_appears_through_unchanged_facade(
     registry = default_feature_registry()
     registry.register(DiagnosticFeature())
     facade = GatewayFacade(feature_registry=registry)
-    assert "diagnostic_route" in {
+    assert "virtual_test_route" in {
         item.feature_id for item in facade.get_capabilities().features
     }
     prepared = facade.prepare(UpdateRequestDto(
         str(workbook_factory()), str(arxml_factory()),  # type: ignore[operator]
     ))
-    assert "diagnostic_route" in {
+    assert "virtual_test_route" in {
         item.feature_id for item in (prepared.preview.features if prepared.preview else ())
     }
 

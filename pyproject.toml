@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "davinci-gw"
-version = "0.3.6"
+version = "1.1.0"
 description = "根据标准化网关路由配置表更新 DaVinci 工程 ARXML。"
 requires-python = ">=3.12"
 dependencies = [

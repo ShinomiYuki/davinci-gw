@@ -30,6 +30,7 @@ from davinci_gw.mutations import MutationHandler, MutationHandlerRegistry
 from .direct_route import DirectRoutePlanner
 from .routing_group_membership import RoutingGroupMembershipService
 from .signal_route import SignalRoutePlanner
+from .diagnostic_route import DiagnosticRoutePlanner
 
 HANDLE_DEFINITIONS = frozenset({
     defs.CANIF_RX_HANDLE, defs.CANIF_TX_HANDLE, defs.PDUR_SRC_HANDLE, defs.PDUR_DEST_HANDLE,
@@ -66,6 +67,8 @@ class AddCoordinator:
             MutationHandler("ecuc", frozenset({MutationKind.ECUC_PDU}), 10, self.ecuc.apply),
             MutationHandler("canif_rx", frozenset({MutationKind.CANIF_RX_PDU}), 20, self.canif.apply),
             MutationHandler("canif_tx", frozenset({MutationKind.CANIF_TX_PDU}), 30, self.canif.apply),
+            MutationHandler("cantp", frozenset({MutationKind.CANTP_CONTAINER}), 35, self.canif.apply),
+            MutationHandler("pdur_queue", frozenset({MutationKind.PDUR_QUEUE}), 38, self.pdur.apply),
             MutationHandler("pdur_path", frozenset({MutationKind.PDUR_ROUTING_PATH}), 40, self.pdur.apply),
             MutationHandler("pdur_src", frozenset({MutationKind.PDUR_SRC_PDU}), 50, self.pdur.apply),
             MutationHandler("pdur_dest", frozenset({MutationKind.PDUR_DEST_PDU}), 60, self.pdur.apply),
@@ -181,8 +184,10 @@ class AddCoordinator:
         signal = SignalRoutePlanner(self.workbook, self.com).plan(
             tuple(route for route in self.workbook.signal_routes if route.operation.value == "ADD"),
         )
-        issues = list(direct.issues + signal.issues)
-        operations = self._deduplicate_operations(direct.operations + signal.operations, issues)
+        diagnostic = (DiagnosticRoutePlanner(self.workbook, self.ecuc, self.canif, self.pdur, self.routing_groups).plan()
+                      if self.workbook.diagnostic_routes else MutationPlan())
+        issues = list(direct.issues + signal.issues + diagnostic.issues)
+        operations = self._deduplicate_operations(direct.operations + signal.operations + diagnostic.operations, issues)
         expected_new_uuids: tuple[str, ...] = ()
         if not any(issue.severity.value == "ERROR" for issue in issues):
             try:
@@ -199,6 +204,9 @@ class AddCoordinator:
             signal_existing_count=signal.existing,
             signal_skipped_count=signal.skipped,
             expected_new_uuids=expected_new_uuids,
+            diagnostic_added_count=diagnostic.diagnostic_added_count,
+            diagnostic_existing_count=diagnostic.diagnostic_existing_count,
+            diagnostic_skipped_count=diagnostic.diagnostic_skipped_count,
         )
 
     def apply(self, plan: MutationPlan) -> None:

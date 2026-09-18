@@ -40,10 +40,10 @@ def test_single_direct_route_adds_complete_chain(
     document = ArxmlDocument.load(output)
     index = document.build_index()
     expected = (
-        "/Cfg/EcuC/EcucPduCollection/GWT_SRC_MSG_SRC_Rx",
-        "/Cfg/EcuC/EcucPduCollection/GWT_DST_MSG_DST_Tx",
-        "/Cfg/CanIf/CanIfInitCfg/GWT_SRC_MSG_SRC_Rx",
-        "/Cfg/CanIf/CanIfInitCfg/GWT_DST_MSG_DST_Tx",
+        "/Cfg/EcuC/EcucPduCollection/GWT_EcuC_SRC_MSG_100_SRC_CAN_Rx",
+        "/Cfg/EcuC/EcucPduCollection/GWT_EcuC_DST_MSG_200_DST_CAN_Tx",
+        "/Cfg/CanIf/CanIfInitCfg/GWT_CanIf_SRC_MSG_100_SRC_CAN_Rx",
+        "/Cfg/CanIf/CanIfInitCfg/GWT_CanIf_DST_MSG_200_DST_CAN_Tx",
         "/Cfg/PduR/PduRRoutingTables/PduRRoutingTable/GWT_SRC_MSG_100_SRC",
         "/Cfg/PduR/PduRRoutingTables/PduRRoutingTable/GWT_SRC_MSG_100_SRC/SRC_MSG_100_SRC",
         "/Cfg/PduR/PduRRoutingTables/PduRRoutingTable/GWT_SRC_MSG_100_SRC/DST_MSG_200_DST",
@@ -134,7 +134,7 @@ def test_same_name_different_semantics_blocks_output(
     namespace = etree.QName(tree.getroot()).namespace
     for node in tree.getroot().iter(f"{{{namespace}}}ECUC-CONTAINER-VALUE"):
         short = node.find(f"{{{namespace}}}SHORT-NAME")
-        if short is not None and short.text == "GWT_DST_MSG_DST_Tx" and definition_ref(node, namespace) == defs.ECUC_PDU:
+        if short is not None and short.text == "GWT_EcuC_DST_MSG_200_DST_CAN_Tx" and definition_ref(node, namespace) == defs.ECUC_PDU:
             parameters, _ = semantic_values(node, namespace)
             value = parameters[defs.ECUC_PDU_LENGTH][0]
             assert value == "8"

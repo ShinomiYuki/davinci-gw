@@ -333,7 +333,8 @@ def test_repair_pipeline_runs_one_final_regression_and_waits_for_second_confirma
             executable.parent.mkdir(parents=True)
             executable.write_bytes(b"exe")
             (executable.parent / "_internal").mkdir()
-            archive = cwd / "release" / "davinci-gw-mcp-1.0.0-win-x64.zip"
+            from davinci_gw.mcp.version import MCP_VERSION
+            archive = cwd / "release" / f"davinci-gw-mcp-{MCP_VERSION}-win-x64.zip"
             archive.parent.mkdir()
             archive.write_bytes(b"zip")
             return "构建成功"

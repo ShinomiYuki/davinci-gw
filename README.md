@@ -1,6 +1,6 @@
 # DaVinci 网关路由工具
 
-本工具读取上游生成的标准网关路由配置表和旧版 DaVinci/MICROSAR 工程导出的完整 ARXML，一次处理直接报文与信号路由的 `ADD`/`DELETE`，生成新版完整 ARXML。配置表和基准 ARXML 始终只读。
+本工具读取上游生成的标准网关路由配置表和旧版 DaVinci/MICROSAR 工程导出的完整 ARXML，一次处理直接报文、信号及 CAN 诊断路由的 `ADD`/`DELETE`，生成新版完整 ARXML。配置表和基准 ARXML 始终只读。
 
 ## 可以做什么
 
@@ -20,7 +20,11 @@
 - 删除信号路由时，如果 DBC 端点和相关 Mapping 引用都已不存在，会按“无需再删除”跳过；发现悬空 Mapping 时仍会阻止输出。
 - 在内存工作副本上完成 `DELETE → 投影 → ADD`，通过输出复核后才原子写出。
 
-当前不支持直接报文 LIN 路由、诊断/CanTp 路由、多 ARXML 合并和 DaVinci GUI 自动操作。
+1.1.0 新增标准“诊断报文路由”页，按 CanIf → 底层 EcuC → CanTp → 上层 EcuC → PduR 的真实引用处理物理寻址双向路由与功能寻址单向请求。`OBD_ETH` 仅处理独立 CAN 侧。N 参数和 STmin 输入单位为 ms，写入 ARXML 前转换为秒；BlockSize 为整数。每个新增 PduR 目标腿独占 Queue，物理寻址 Depth=3，7DF/功能寻址 Depth=5，TpThreshold=0。已有对象保持原样，输入参数冲突时报告错误。
+
+源信号“超时值”单独写入 Rx `ComRxDataTimeoutSubstitutionValue`，无需同时填写“超时时间”；不修改 Tx 替代值。新增普通 CanIf/EcuC 名称包含模块、报文名、CAN ID、完整通道与方向，已有名称通过引用复用。
+
+当前不支持直接报文 LIN 路由、多 ARXML 合并和 DaVinci GUI 自动操作。诊断参数与边界见 [1.1.0 发布说明](docs/发布说明_v1.1.0.md)。
 
 ## Windows 桌面版
 
@@ -32,7 +36,7 @@
 
 ## 本地 MCP 服务
 
-MCP 1.0 提供 Windows x64 `onedir` STDIO 服务。多个对话共用安装目录中的 `_internal`，不为每次启动生成数百 MB 的 `_MEI*` 临时目录；对外是一个 ZIP，解压和安装时必须保留完整目录。普通校验、预览和生成保持本地运行，不监听端口，也不上传 Excel 或 ARXML。
+MCP 1.1 提供 Windows x64 `onedir` STDIO 服务。多个对话共用安装目录中的 `_internal`，不为每次启动生成数百 MB 的 `_MEI*` 临时目录；对外是一个 ZIP，解压和安装时必须保留完整目录。普通校验、预览和生成保持本地运行，不监听端口，也不上传 Excel 或 ARXML。
 
 服务包含生成工作流和经审批的故障修复工作流：
 

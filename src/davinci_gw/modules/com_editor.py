@@ -241,9 +241,11 @@ class ComEditor:
         locations: tuple[SourceLocation, ...],
     ) -> MutationOperation | None:
         """直接使用上游标准超时时间；空值不写零，也不反推 Cycle Time。"""
-        if timeout is None:
+        if timeout is None and substitution is None:
             return None
-        parameters = [(defs.COM_TIMEOUT_ACTION, "REPLACE"), (defs.COM_TIMEOUT, timeout)]
+        parameters = []
+        if timeout is not None:
+            parameters.extend(((defs.COM_TIMEOUT_ACTION, "REPLACE"), (defs.COM_TIMEOUT, timeout)))
         if substitution is not None:
             parameters.append((defs.COM_TIMEOUT_SUBSTITUTION, substitution))
         return MutationOperation(

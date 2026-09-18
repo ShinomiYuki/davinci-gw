@@ -81,8 +81,8 @@ def _leave_only_local_target_endpoint(path: Path) -> None:
                 references.remove(reference)
     routing_path.getparent().remove(routing_path)
     for short_name, definition in (
-        ("GWT_SRC_MSG_SRC_Rx", defs.CANIF_RX),
-        ("GWT_SRC_MSG_SRC_Rx", defs.ECUC_PDU),
+        ("GWT_CanIf_SRC_MSG_100_SRC_CAN_Rx", defs.CANIF_RX),
+        ("GWT_EcuC_SRC_MSG_100_SRC_CAN_Rx", defs.ECUC_PDU),
     ):
         node = _named(tree, namespace, short_name, definition)
         node.getparent().remove(node)
@@ -106,8 +106,8 @@ def _leave_only_local_source_endpoint(path: Path) -> None:
                 references.remove(reference)
     routing_path.getparent().remove(routing_path)
     for short_name, definition in (
-        ("GWT_DST_MSG_DST_Tx", defs.CANIF_TX),
-        ("GWT_DST_MSG_DST_Tx", defs.ECUC_PDU),
+        ("GWT_CanIf_DST_MSG_200_DST_CAN_Tx", defs.CANIF_TX),
+        ("GWT_EcuC_DST_MSG_200_DST_CAN_Tx", defs.ECUC_PDU),
     ):
         node = _named(tree, namespace, short_name, definition)
         node.getparent().remove(node)
@@ -268,7 +268,7 @@ def test_add_uses_existing_source_can_type_when_only_new_target_leg_is_added(
     assert generate_inputs(baseline_config, arxml_factory(), baseline).is_success
     tree = etree.parse(str(baseline))
     namespace = etree.QName(tree.getroot()).namespace
-    source_rx = _named(tree, namespace, "GWT_SRC_MSG_SRC_Rx", defs.CANIF_RX)
+    source_rx = _named(tree, namespace, "GWT_CanIf_SRC_MSG_100_SRC_CAN_Rx", defs.CANIF_RX)
     _set_parameter(source_rx, namespace, defs.CANIF_RX_CAN_ID_TYPE, "STANDARD_FD_CAN")
     tree.write(str(baseline), encoding="UTF-8", xml_declaration=True)
 
@@ -295,7 +295,7 @@ def test_add_uses_existing_source_can_type_when_only_new_target_leg_is_added(
     generated = ArxmlDocument.load(output)
     generated_source = _named(
         etree.ElementTree(generated.root), generated.namespace,
-        "GWT_SRC_MSG_SRC_Rx", defs.CANIF_RX,
+        "GWT_CanIf_SRC_MSG_100_SRC_CAN_Rx", defs.CANIF_RX,
     )
     parameters, _ = semantic_values(generated_source, generated.namespace)
     assert parameters[defs.CANIF_RX_CAN_ID_TYPE] == ("STANDARD_FD_CAN",)
@@ -310,7 +310,7 @@ def test_delete_keeps_strict_source_can_type_matching(
     assert generate_inputs(config, arxml_factory(), baseline).is_success
     tree = etree.parse(str(baseline))
     namespace = etree.QName(tree.getroot()).namespace
-    source_rx = _named(tree, namespace, "GWT_SRC_MSG_SRC_Rx", defs.CANIF_RX)
+    source_rx = _named(tree, namespace, "GWT_CanIf_SRC_MSG_100_SRC_CAN_Rx", defs.CANIF_RX)
     _set_parameter(source_rx, namespace, defs.CANIF_RX_CAN_ID_TYPE, "STANDARD_FD_CAN")
     tree.write(str(baseline), encoding="UTF-8", xml_declaration=True)
 
@@ -341,7 +341,7 @@ def test_add_does_not_accept_invalid_existing_source_can_type(
     assert generate_inputs(config, arxml_factory(), baseline).is_success
     tree = etree.parse(str(baseline))
     namespace = etree.QName(tree.getroot()).namespace
-    source_rx = _named(tree, namespace, "GWT_SRC_MSG_SRC_Rx", defs.CANIF_RX)
+    source_rx = _named(tree, namespace, "GWT_CanIf_SRC_MSG_100_SRC_CAN_Rx", defs.CANIF_RX)
     _set_parameter(source_rx, namespace, defs.CANIF_RX_CAN_ID_TYPE, "BROKEN_CAN_TYPE")
     tree.write(str(baseline), encoding="UTF-8", xml_declaration=True)
 

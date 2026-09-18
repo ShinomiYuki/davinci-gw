@@ -37,6 +37,8 @@ class MutationKind(str, Enum):
     """按模块解耦的配置对象或参数类型。"""
 
     ECUC_PDU = "ECUC_PDU"
+    CANTP_CONTAINER = "CANTP_CONTAINER"
+    PDUR_QUEUE = "PDUR_QUEUE"
     CANIF_RX_PDU = "CANIF_RX_PDU"
     CANIF_TX_PDU = "CANIF_TX_PDU"
     PDUR_ROUTING_PATH = "PDUR_ROUTING_PATH"
@@ -124,6 +126,29 @@ class SignalRouteChange:
 
 
 @dataclass(frozen=True, slots=True)
+class DiagnosticEndpoint:
+    """一个 CAN 通道上的请求/响应配对，时间参数已从毫秒转换为秒。"""
+
+    channel: str
+    request_id: int
+    response_id: int | None
+    transport_parameters: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticRouteChange:
+    """原子 CAN 诊断需求；OBD_ETH 仅有应答端 CAN 配置。"""
+
+    operation: OperationType
+    entry_type: str
+    request_name: str
+    response_name: str
+    request_endpoint: DiagnosticEndpoint | None
+    response_endpoint: DiagnosticEndpoint
+    source: SourceLocation
+
+
+@dataclass(frozen=True, slots=True)
 class WorkbookData:
     """标准工作簿规范化后的全部执行数据。"""
 
@@ -132,6 +157,8 @@ class WorkbookData:
     reference_data: tuple[ReferenceDataEntry, ...] = ()
     direct_routes: tuple[DirectRouteChange, ...] = ()
     signal_routes: tuple[SignalRouteChange, ...] = ()
+    diagnostic_routes: tuple[DiagnosticRouteChange, ...] = ()
+    diagnostic_functional_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +316,11 @@ class MutationPlan:
     signal_conflict_count: int = 0
     expected_new_uuids: tuple[str, ...] = ()
     decisions: tuple["RetentionDecision", ...] = ()
+    diagnostic_added_count: int = 0
+    diagnostic_existing_count: int = 0
+    diagnostic_deleted_count: int = 0
+    diagnostic_missing_count: int = 0
+    diagnostic_skipped_count: int = 0
 
     @property
     def errors(self) -> tuple[ValidationIssue, ...]:

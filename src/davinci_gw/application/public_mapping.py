@@ -43,6 +43,12 @@ def _route_messages(workbook: WorkbookData | None) -> dict[tuple[str | None, int
             MessageIdentityDto("SOURCE", route.key.source_message_name),
             MessageIdentityDto("TARGET", route.key.target_message_name),
         )
+    for route in workbook.diagnostic_routes:
+        endpoint = route.response_endpoint
+        result[(route.source.sheet_name, route.source.row_number)] = (
+            MessageIdentityDto("SOURCE", route.request_name, f"0x{endpoint.request_id:X}"),
+        ) + ((MessageIdentityDto("TARGET", route.response_name, f"0x{endpoint.response_id:X}"),)
+             if endpoint.response_id is not None else ())
     return result
 
 

@@ -54,10 +54,10 @@ def test_delete_single_direct_route_cleans_complete_owned_chain(
     index = ArxmlDocument.load(output).build_index()
     removed = (
         "/Cfg/PduR/PduRRoutingTables/PduRRoutingTable/GWT_SRC_MSG_100_SRC",
-        "/Cfg/CanIf/CanIfInitCfg/GWT_SRC_MSG_SRC_Rx",
-        "/Cfg/CanIf/CanIfInitCfg/GWT_DST_MSG_DST_Tx",
-        "/Cfg/EcuC/EcucPduCollection/GWT_SRC_MSG_SRC_Rx",
-        "/Cfg/EcuC/EcucPduCollection/GWT_DST_MSG_DST_Tx",
+        "/Cfg/CanIf/CanIfInitCfg/GWT_CanIf_SRC_MSG_100_SRC_CAN_Rx",
+        "/Cfg/CanIf/CanIfInitCfg/GWT_CanIf_DST_MSG_200_DST_CAN_Tx",
+        "/Cfg/EcuC/EcucPduCollection/GWT_EcuC_SRC_MSG_100_SRC_CAN_Rx",
+        "/Cfg/EcuC/EcucPduCollection/GWT_EcuC_DST_MSG_200_DST_CAN_Tx",
     )
     assert all(not index.find_by_path(path) for path in removed)
     assert len(index.find_by_path("/Cfg/CanIf/CanIfInitCfg/CanIfInitHohCfg/HRH")) == 1
@@ -144,15 +144,15 @@ def test_one_to_many_direct_delete_keeps_other_leg_and_source_chain(
     assert len(index.find_by_path(path)) == 1
     assert not index.find_by_path(f"{path}/DST_MSG_200_DST")
     assert len(index.find_by_path(f"{path}/DST_MSG_2_201_DST")) == 1
-    assert len(index.find_by_path("/Cfg/CanIf/CanIfInitCfg/GWT_SRC_MSG_SRC_Rx")) == 1
+    assert len(index.find_by_path("/Cfg/CanIf/CanIfInitCfg/GWT_CanIf_SRC_MSG_100_SRC_CAN_Rx")) == 1
     retained_paths = {
         operation.object_path for operation in report.plan.operations
         if operation.action.value == "RETAIN"
     }
-    assert "/Cfg/EcuC/EcucPduCollection/GWT_SRC_MSG_SRC_Rx" in retained_paths
-    assert "/Cfg/CanIf/CanIfInitCfg/GWT_SRC_MSG_SRC_Rx" in retained_paths
-    assert "/Cfg/EcuC/EcucPduCollection/GWT_DST_MSG_2_DST_Tx" in retained_paths
-    assert "/Cfg/CanIf/CanIfInitCfg/GWT_DST_MSG_2_DST_Tx" in retained_paths
+    assert "/Cfg/EcuC/EcucPduCollection/GWT_EcuC_SRC_MSG_100_SRC_CAN_Rx" in retained_paths
+    assert "/Cfg/CanIf/CanIfInitCfg/GWT_CanIf_SRC_MSG_100_SRC_CAN_Rx" in retained_paths
+    assert "/Cfg/EcuC/EcucPduCollection/GWT_EcuC_DST_MSG_2_201_DST_CAN_Tx" in retained_paths
+    assert "/Cfg/CanIf/CanIfInitCfg/GWT_CanIf_DST_MSG_2_201_DST_CAN_Tx" in retained_paths
     assert report.plan.direct_retained_count >= 1
 
 
@@ -179,8 +179,8 @@ def test_shared_target_objects_are_retained_by_other_routing_path(
     )
     assert report.is_success, _messages(report)
     index = ArxmlDocument.load(output).build_index()
-    assert len(index.find_by_path("/Cfg/CanIf/CanIfInitCfg/GWT_DST_MSG_DST_Tx")) == 1
-    assert len(index.find_by_path("/Cfg/EcuC/EcucPduCollection/GWT_DST_MSG_DST_Tx")) == 1
+    assert len(index.find_by_path("/Cfg/CanIf/CanIfInitCfg/GWT_CanIf_DST_MSG_200_DST_CAN_Tx")) == 1
+    assert len(index.find_by_path("/Cfg/EcuC/EcucPduCollection/GWT_EcuC_DST_MSG_200_DST_CAN_Tx")) == 1
     assert any("仍有" in decision.reason for decision in report.plan.decisions)
 
 
@@ -287,7 +287,7 @@ def test_target_canif_with_manual_subcontainer_is_retained(
     namespace = etree.QName(tree.getroot()).namespace
     target = next(node for node in tree.getroot().iter()
                   if definition_ref(node, namespace) == defs.CANIF_TX
-                  and node.findtext(f"{{{namespace}}}SHORT-NAME") == "GWT_DST_MSG_DST_Tx")
+                  and node.findtext(f"{{{namespace}}}SHORT-NAME") == "GWT_CanIf_DST_MSG_200_DST_CAN_Tx")
     group = etree.SubElement(target, f"{{{namespace}}}SUB-CONTAINERS")
     manual = etree.SubElement(group, f"{{{namespace}}}ECUC-CONTAINER-VALUE")
     etree.SubElement(manual, f"{{{namespace}}}SHORT-NAME").text = "ManualChild"
@@ -300,17 +300,17 @@ def test_target_canif_with_manual_subcontainer_is_retained(
     )
     assert report.is_success, _messages(report)
     index = ArxmlDocument.load(output).build_index()
-    canif_path = "/Cfg/CanIf/CanIfInitCfg/GWT_DST_MSG_DST_Tx"
+    canif_path = "/Cfg/CanIf/CanIfInitCfg/GWT_CanIf_DST_MSG_200_DST_CAN_Tx"
     assert len(index.find_by_path(canif_path)) == 1
     assert len(index.find_by_path(f"{canif_path}/ManualChild")) == 1
-    assert len(index.find_by_path("/Cfg/EcuC/EcucPduCollection/GWT_DST_MSG_DST_Tx")) == 1
+    assert len(index.find_by_path("/Cfg/EcuC/EcucPduCollection/GWT_EcuC_DST_MSG_200_DST_CAN_Tx")) == 1
 
 
 def test_target_canif_shared_by_external_reference_is_retained(
     workbook_factory: object, generated_arxml_factory: object, tmp_path: Path,
 ) -> None:
     baseline = generated_arxml_factory(direct_rows=(direct_row(),))
-    target = "/Cfg/CanIf/CanIfInitCfg/GWT_DST_MSG_DST_Tx"
+    target = "/Cfg/CanIf/CanIfInitCfg/GWT_CanIf_DST_MSG_200_DST_CAN_Tx"
     _append_reference_to_shared_node(baseline, target)
     output = tmp_path / "shared_canif.arxml"
     report = generate_inputs(
@@ -319,7 +319,7 @@ def test_target_canif_shared_by_external_reference_is_retained(
     assert report.is_success, _messages(report)
     index = ArxmlDocument.load(output).build_index()
     assert len(index.find_by_path(target)) == 1
-    assert len(index.find_by_path("/Cfg/EcuC/EcucPduCollection/GWT_DST_MSG_DST_Tx")) == 1
+    assert len(index.find_by_path("/Cfg/EcuC/EcucPduCollection/GWT_EcuC_DST_MSG_200_DST_CAN_Tx")) == 1
     assert any(decision.category == "DIRECT_SHARED_CANIF" for decision in report.plan.decisions)
 
 
@@ -327,7 +327,7 @@ def test_target_ecuc_shared_by_external_reference_is_retained_after_tx_cleanup(
     workbook_factory: object, generated_arxml_factory: object, tmp_path: Path,
 ) -> None:
     baseline = generated_arxml_factory(direct_rows=(direct_row(),))
-    target = "/Cfg/EcuC/EcucPduCollection/GWT_DST_MSG_DST_Tx"
+    target = "/Cfg/EcuC/EcucPduCollection/GWT_EcuC_DST_MSG_200_DST_CAN_Tx"
     _append_reference_to_shared_node(baseline, target)
     output = tmp_path / "shared_ecuc.arxml"
     report = generate_inputs(
@@ -335,7 +335,7 @@ def test_target_ecuc_shared_by_external_reference_is_retained_after_tx_cleanup(
     )
     assert report.is_success, _messages(report)
     index = ArxmlDocument.load(output).build_index()
-    assert not index.find_by_path("/Cfg/CanIf/CanIfInitCfg/GWT_DST_MSG_DST_Tx")
+    assert not index.find_by_path("/Cfg/CanIf/CanIfInitCfg/GWT_CanIf_DST_MSG_200_DST_CAN_Tx")
     assert len(index.find_by_path(target)) == 1
     assert any(decision.category == "DIRECT_SHARED_ECUC" for decision in report.plan.decisions)
 
@@ -373,7 +373,7 @@ def test_manual_or_incomplete_direct_object_is_not_guessed_or_deleted(
     namespace = etree.QName(tree.getroot()).namespace
     target = next(node for node in tree.getroot().iter()
                   if definition_ref(node, namespace) == defs.CANIF_TX
-                  and node.findtext(f"{{{namespace}}}SHORT-NAME") == "GWT_DST_MSG_DST_Tx")
+                  and node.findtext(f"{{{namespace}}}SHORT-NAME") == "GWT_CanIf_DST_MSG_200_DST_CAN_Tx")
     target.find(f"{{{namespace}}}SHORT-NAME").text = "ManualTx"
     tree.write(str(baseline), encoding="UTF-8", xml_declaration=True)
     output = tmp_path / "manual_blocked.arxml"
@@ -719,7 +719,7 @@ def test_same_direct_key_delete_add_replaces_parameters_on_projection(
     assert (report.plan.direct_deleted_count, report.plan.direct_added_count) == (1, 1)
     document = ArxmlDocument.load(output)
     source = document.build_index().find_by_path(
-        "/Cfg/EcuC/EcucPduCollection/GWT_SRC_MSG_SRC_Rx",
+        "/Cfg/EcuC/EcucPduCollection/GWT_EcuC_SRC_MSG_100_SRC_CAN_Rx",
     )[0]
     parameters, _ = semantic_values(source, document.namespace)
     assert parameters[defs.ECUC_PDU_LENGTH] == ("12",)

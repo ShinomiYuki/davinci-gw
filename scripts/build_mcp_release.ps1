@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Python = "python",
-    [string]$Version = "1.0.0"
+    [string]$Version = "1.1.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,6 +28,10 @@ if (Test-Path -LiteralPath $condaLibraryBin -PathType Container) {
 }
 
 foreach ($path in @($buildRoot, $distRoot, $stageRoot, $generatedRoot)) {
+    $resolvedTarget = [IO.Path]::GetFullPath($path)
+    if (-not $resolvedTarget.StartsWith($projectRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "构建清理路径超出工程目录：$resolvedTarget"
+    }
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
 }
 New-Item -ItemType Directory -Path $buildRoot, $distRoot, $stageRoot, $generatedRoot -Force | Out-Null

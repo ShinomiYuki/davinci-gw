@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
 from lxml import etree
 
 from davinci_gw.application.generate import generate_inputs
@@ -16,6 +17,37 @@ from tests.conftest import signal_row
 
 def _messages(report: object) -> str:
     return "\n".join(issue.message for issue in report.all_issues)
+
+
+@pytest.mark.parametrize("timeout", [None, 2])
+@pytest.mark.parametrize("value,expected", [(0, "0"), (255, "255"), ("0xFF", "255")])
+def test_substitution_is_written_only_to_rx_and_is_idempotent(
+    workbook_factory: object, arxml_factory: object, tmp_path: Path,
+    timeout: object, value: object, expected: str,
+) -> None:
+    """替代值不依赖超时时间，也不污染目标 Tx 信号。"""
+    workbook = workbook_factory(direct_rows=(), signal_rows=(
+        signal_row(**{"超时时间": timeout, "超时值": value}),
+    ))
+    output = tmp_path / "substitution.arxml"
+    report = generate_inputs(workbook, arxml_factory(), output)
+    assert report.is_success, _messages(report)
+    document = ArxmlDocument.load(output)
+    index = document.build_index()
+    rx = index.find_by_path("/Cfg/Com/ComConfig/SRC_SIG_oSRC_MSG_oSRC_Rx")[0]
+    tx = index.find_by_path("/Cfg/Com/ComConfig/DST_SIG_oDST_MSG_oDST_Tx")[0]
+    parameters, _ = semantic_values(rx, document.namespace)
+    tx_parameters, _ = semantic_values(tx, document.namespace)
+    assert parameters[defs.COM_TIMEOUT_SUBSTITUTION] == (expected,)
+    assert defs.COM_TIMEOUT_SUBSTITUTION not in tx_parameters
+    if timeout is None:
+        assert defs.COM_TIMEOUT not in parameters
+        assert defs.COM_TIMEOUT_ACTION not in parameters
+    else:
+        assert parameters[defs.COM_TIMEOUT] == (str(timeout),)
+    repeated = generate_inputs(workbook, output, tmp_path / "repeated.arxml")
+    assert repeated.is_success, _messages(repeated)
+    assert not repeated.plan.operations
 
 
 def test_single_signal_route_and_source_timeout(

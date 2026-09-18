@@ -71,7 +71,9 @@ def operation_matches(
         return False
     actual_parameters, actual_references = semantic_values(node, namespace, recursive=recursive)
     expected_parameters = {key: (value,) for key, value in operation.parameters}
-    expected_references = {key: (value,) for key, value in operation.references}
+    expected_references = {}
+    for key, value in operation.references:
+        expected_references[key] = expected_references.get(key, ()) + (value,)
     for key in ignore_parameters:
         actual_parameters.pop(key, None)
         expected_parameters.pop(key, None)
@@ -197,17 +199,33 @@ def _filter_value_entries(
 
 
 def _set_values(node: etree._Element, namespace: str, operation: MutationOperation) -> None:
-    expected = dict(operation.parameters) | dict(operation.references)
+    expected = {}
+    for key, value in operation.parameters + operation.references:
+        expected.setdefault(key, []).append(value)
     found: set[str] = set()
-    for entry in node.iter():
+    entries = {}
+    for entry in list(node.iter()):
         ref = definition_ref(entry, namespace)
         if ref not in expected:
             continue
         for child in entry:
             if isinstance(child.tag, str) and local_name(child) in {"VALUE", "VALUE-REF"}:
-                child.text = expected[ref]
-                found.add(ref)
+                entries.setdefault(ref, []).append((entry, child))
                 break
+    for ref, candidates in entries.items():
+        values = expected[ref]
+        template = candidates[0][0]
+        parent = template.getparent()
+        for entry, _ in candidates[1:]:
+            entry.getparent().remove(entry)
+        candidates[0][1].text = values[0]
+        for value in values[1:]:
+            entry = deepcopy(template)
+            for child in entry:
+                if isinstance(child.tag, str) and local_name(child) in {"VALUE", "VALUE-REF"}:
+                    child.text = value
+            parent.append(entry)
+        found.add(ref)
     missing = expected.keys() - found
     if missing:
         raise ArxmlStructureError(
@@ -241,7 +259,7 @@ def build_container(
     if short_name is None:
         raise ArxmlStructureError(f"模板“{operation.definition_ref}”缺少SHORT-NAME。")
     short_name.text = operation.short_name
-    if operation.kind in {MutationKind.PDUR_ROUTING_PATH, MutationKind.COM_GW_MAPPING}:
+    if operation.kind in {MutationKind.PDUR_ROUTING_PATH, MutationKind.COM_GW_MAPPING, MutationKind.CANTP_CONTAINER, MutationKind.PDUR_QUEUE}:
         subcontainers = node.find(qualified(namespace, "SUB-CONTAINERS"))
         if subcontainers is not None:
             for child in list(subcontainers):

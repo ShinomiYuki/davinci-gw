@@ -181,13 +181,13 @@ def _add_unrouted_self_transmit(path: Path) -> None:
     tree = etree.parse(str(path))
     namespace = etree.QName(tree.getroot()).namespace
     target_ecuc = next(node for node in tree.getroot().iter()
-                       if node.findtext(f"{{{namespace}}}SHORT-NAME") == "GWT_DST_MSG_DST_Tx"
+                       if node.findtext(f"{{{namespace}}}SHORT-NAME") == "GWT_EcuC_DST_MSG_200_DST_CAN_Tx"
                        and definition_ref(node, namespace) == defs.ECUC_PDU)
     ecuc_clone = etree.fromstring(etree.tostring(target_ecuc))
     ecuc_clone.find(f"{{{namespace}}}SHORT-NAME").text = "LocalSelfPdu"
     target_ecuc.getparent().append(ecuc_clone)
     target_tx = next(node for node in tree.getroot().iter()
-                     if node.findtext(f"{{{namespace}}}SHORT-NAME") == "GWT_DST_MSG_DST_Tx"
+                     if node.findtext(f"{{{namespace}}}SHORT-NAME") == "GWT_CanIf_DST_MSG_200_DST_CAN_Tx"
                      and definition_ref(node, namespace) == defs.CANIF_TX)
     tx_clone = etree.fromstring(etree.tostring(target_tx))
     tx_clone.find(f"{{{namespace}}}SHORT-NAME").text = "GWH_DST_MSG_LocalSelfTx"

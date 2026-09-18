@@ -973,6 +973,12 @@ class DeleteCoordinator:
         """一次性完成所有 DELETE 的定位、共享引用投影和参数删除决策。"""
         direct_deleted, direct_missing = self._plan_direct()
         signal_deleted, signal_missing, timeout_removed, timeout_retained = self._plan_signal()
+        from .diagnostic_route import DiagnosticRoutePlanner
+        diagnostic = (DiagnosticRoutePlanner(self.workbook, self.ecuc, self.canif, self.pdur, self.routing_groups).plan_delete()
+                      if self.workbook.diagnostic_routes else MutationPlan())
+        for operation in diagnostic.operations:
+            self._add_operation(operation)
+        self.issues.extend(diagnostic.issues)
         errors = tuple(issue for issue in self.issues if issue.severity is ValidationSeverity.ERROR)
         operations = tuple(sorted(
             self.operations.values(),
@@ -996,7 +1002,9 @@ class DeleteCoordinator:
             signal_timeout_removed_count=timeout_removed,
             signal_timeout_retained_count=timeout_retained,
             signal_conflict_count=sum(issue.code.startswith("SIGNAL_DELETE") for issue in errors),
-            decisions=tuple(self.decisions.values()),
+            decisions=tuple(self.decisions.values()) + diagnostic.decisions,
+            diagnostic_deleted_count=diagnostic.diagnostic_deleted_count,
+            diagnostic_missing_count=diagnostic.diagnostic_missing_count,
         )
 
     def apply(self, plan: MutationPlan) -> ArxmlIndex:

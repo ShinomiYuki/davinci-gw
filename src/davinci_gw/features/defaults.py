@@ -129,4 +129,28 @@ class SignalRoutingFeature:
 
 def default_feature_registry() -> FeatureRegistry:
     """为每个 Facade 创建独立默认注册表，避免全局测试污染。"""
-    return FeatureRegistry((DirectMessageFeature(), SignalRoutingFeature()))
+    return FeatureRegistry((DirectMessageFeature(), SignalRoutingFeature(), DiagnosticRoutingFeature()))
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticRoutingFeature:
+    """通过公共统计契约向 GUI、CLI 和 MCP 展示 CAN 诊断需求。"""
+
+    feature_id: str = "diagnostic_route"
+    display_name: str = "CAN诊断路由"
+    capabilities: tuple[str, ...] = ("ADD", "DELETE", "PREVIEW", "GENERATE")
+
+    def summarize(self, context: FeatureContext) -> FeatureSummaryDto:
+        routes = context.workbook.diagnostic_routes if context.workbook else ()
+        plan = context.plan
+        metrics = tuple(MetricDto(name, label, getattr(plan, f"diagnostic_{name}_count") if plan else 0)
+                        for name, label in (("added", "新增"), ("existing", "已有"), ("deleted", "删除"),
+                                            ("missing", "未找到"), ("skipped", "跳过")))
+        details = tuple(ChangeDetailDto(route.operation.value, "CAN诊断",
+            f"{route.request_name} · {route.request_endpoint.channel if route.request_endpoint else '独立CAN侧'}",
+            f"{route.response_name} · {route.response_endpoint.channel} · "
+            f"0x{route.response_endpoint.request_id:X}/"
+            f"{format(route.response_endpoint.response_id, 'X') if route.response_endpoint.response_id is not None else '功能寻址'}",
+            f"{route.source.sheet_name} 第 {route.source.row_number} 行") for route in routes
+            if plan and any(route.source in operation.source_locations for operation in plan.operations))
+        return FeatureSummaryDto(self.feature_id, self.display_name, _status(context), metrics, details=details)

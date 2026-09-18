@@ -18,7 +18,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 默认安装位置为：
 
 ```text
-%LOCALAPPDATA%\Programs\DaVinciGW\versions\1.0.0\davinci-gw-mcp.exe
+%LOCALAPPDATA%\Programs\DaVinciGW\versions\1.1.0\davinci-gw-mcp.exe
 ```
 
 安装器在复制前核对 `SHA256SUMS.txt` 中的全部文件。每个版本安装到独立目录，升级时 Codex 配置切换到新版本，因此正在运行的旧会话不会阻塞新版本安装；相同版本、相同内容可重复安装。Codex 配置有变化时会在原文件旁创建带 UTC 时间戳的 `.bak`。安装器只维护带以下标记的配置块，不会重写其他配置：
@@ -44,7 +44,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ```toml
 [mcp_servers.davinci_gateway]
-command = 'C:\Users\YOUR_NAME\AppData\Local\Programs\DaVinciGW\versions\1.0.0\davinci-gw-mcp.exe'
+command = 'C:\Users\YOUR_NAME\AppData\Local\Programs\DaVinciGW\versions\1.1.0\davinci-gw-mcp.exe'
 startup_timeout_sec = 30
 tool_timeout_sec = 3600
 enabled = true

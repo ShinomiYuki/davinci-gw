@@ -52,6 +52,11 @@ def _merge_plans(delete: MutationPlan, add: MutationPlan) -> MutationPlan:
         signal_conflict_count=delete.signal_conflict_count,
         expected_new_uuids=add.expected_new_uuids,
         decisions=delete.decisions,
+        diagnostic_added_count=add.diagnostic_added_count,
+        diagnostic_existing_count=add.diagnostic_existing_count,
+        diagnostic_skipped_count=add.diagnostic_skipped_count,
+        diagnostic_deleted_count=delete.diagnostic_deleted_count,
+        diagnostic_missing_count=delete.diagnostic_missing_count,
     )
 
 

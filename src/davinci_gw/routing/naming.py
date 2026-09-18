@@ -29,6 +29,11 @@ def direct_target_name(message: str, channel: str) -> str:
     return f"GWT_{safe_name(message)}_{channel_token(channel)}_Tx"
 
 
+def direct_endpoint_name(module: str, message: str, can_id: int, channel: str, direction: str) -> str:
+    """只用于新建 CanIf/EcuC 对象，完整保留通道和 CAN ID。"""
+    return f"GWT_{module}_{safe_name(message)}_{can_id:X}_{safe_name(channel)}_{direction}"
+
+
 def pdur_path_name(message: str, can_id: int, channel: str) -> str:
     """返回一对多 PduR RoutingPath 名称，CAN ID 使用无前缀十六进制。"""
     return f"GWT_{safe_name(message)}_{can_id:X}_{channel_token(channel)}"

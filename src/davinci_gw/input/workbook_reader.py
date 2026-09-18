@@ -19,6 +19,7 @@ from davinci_gw.domain.models import (
     SignalRouteChange,
     SourceLocation,
     ValidationIssue,
+    ValidationSeverity,
     WorkbookData,
     WorkbookReadResult,
 )
@@ -185,7 +186,9 @@ def _decimal(
         parsed = None
     else:
         try:
-            parsed = Decimal(str(value))
+            parsed = (Decimal(int(value, 16))
+                      if field == "超时值" and isinstance(value, str)
+                      and value.lower().startswith("0x") else Decimal(str(value)))
         except (InvalidOperation, ValueError):
             parsed = None
     if parsed is None or not parsed.is_finite() or parsed < 0:
@@ -319,6 +322,9 @@ def _read_signals(
 
 def read_workbook(config_path: str | Path) -> WorkbookReadResult:
     """读取三张执行输入页并返回规范化数据和全部可定位契约问题。"""
+    from .diagnostic_reader import read_diagnostics
+    from .workbook_schema import DIAGNOSTIC_HEADERS, DIAGNOSTIC_SHEET
+
     path = Path(config_path).expanduser().resolve()
     issues: list[ValidationIssue] = []
     version, version_issue = parse_target_version(path)
@@ -351,7 +357,38 @@ def read_workbook(config_path: str | Path) -> WorkbookReadResult:
             references = _read_references(workbook[REFERENCE_SHEET], mappings[REFERENCE_SHEET], path, issues) if REFERENCE_SHEET in mappings else []
             direct = _read_direct(workbook[DIRECT_SHEET], mappings[DIRECT_SHEET], path, issues) if DIRECT_SHEET in mappings else []
             signals = _read_signals(workbook[SIGNAL_SHEET], mappings[SIGNAL_SHEET], path, issues) if SIGNAL_SHEET in mappings else []
+            diagnostics = []
+            functional_ids = []
+            if DIAGNOSTIC_SHEET in workbook.sheetnames:
+                sheet = workbook[DIAGNOSTIC_SHEET]
+                headers = {_clean_string(value) for value in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))}
+                if not {"诊断入口类型", "操作类型"} & headers:
+                    # 旧版模板的示例页从未作为执行输入，不能替它推断 ADD。
+                    issues.append(ValidationIssue(
+                        code="DIAGNOSTIC_LEGACY_SHEET_IGNORED",
+                        message="旧版诊断页缺少诊断入口类型和操作类型，本次不执行该页；请使用新版标准表提交诊断需求。",
+                        severity=ValidationSeverity.WARNING, file_path=path,
+                        location=SourceLocation(DIAGNOSTIC_SHEET, 1)))
+                else:
+                    mapping = _header_map(sheet, DIAGNOSTIC_HEADERS, path, issues)
+                    if mapping is not None:
+                        diagnostics = read_diagnostics(sheet, mapping, path, issues, references)
+            if diagnostics and "诊断报文路由参数" in workbook.sheetnames:
+                sheet = workbook["诊断报文路由参数"]
+                headers = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))
+                if "通用功能寻址CANID" in headers:
+                    column = headers.index("通用功能寻址CANID")
+                    for number, values in enumerate(sheet.iter_rows(min_row=2, values_only=True), 2):
+                        value = values[column] if column < len(values) else None
+                        if _is_blank(value):
+                            continue
+                        if isinstance(value, str) and not value.lower().startswith("0x"):
+                            value = "0x" + value
+                        parsed = _integer(value, minimum=0, maximum=MAX_CAN_ID, path=path, sheet=sheet.title,
+                                          row_number=number, field="通用功能寻址CANID", issues=issues)
+                        if parsed is not None:
+                            functional_ids.append(parsed)
         finally:
             workbook.close()
-    data = WorkbookData(path, version, tuple(references), tuple(direct), tuple(signals))
+    data = WorkbookData(path, version, tuple(references), tuple(direct), tuple(signals), tuple(diagnostics), tuple(functional_ids))
     return WorkbookReadResult(data, tuple(issues))

@@ -21,7 +21,7 @@ from davinci_gw.modules.common import unique_named_node
 from davinci_gw.modules.ecuc_editor import EcucEditor
 from davinci_gw.modules.pdur_editor import PduREditor
 
-from .naming import direct_source_name, direct_target_name, pdur_leg_name, pdur_path_name
+from .naming import direct_endpoint_name, pdur_leg_name, pdur_path_name
 from .direct_route_locator import (
     SUPPORTED_CAN_TYPES,
     DirectRouteSemanticLocator,
@@ -310,7 +310,8 @@ class DirectRoutePlanner:
                 assert source_resolution.chain is not None
                 source_path = source_resolution.chain.routing_path
             else:
-                source_name = direct_source_name(route.key.source_message_name, route.key.source_channel)
+                source_name = direct_endpoint_name("CanIf", route.key.source_message_name, route.key.source_can_id, route.key.source_channel, "Rx")
+                source_ecuc_name = direct_endpoint_name("EcuC", route.key.source_message_name, route.key.source_can_id, route.key.source_channel, "Rx")
                 path_name = pdur_path_name(
                     route.key.source_message_name, route.key.source_can_id, route.key.source_channel,
                 )
@@ -318,7 +319,7 @@ class DirectRoutePlanner:
                     route.key.source_message_name, route.key.source_can_id, route.key.source_channel,
                 )
                 ecuc_source = self.ecuc.pdu_operation(
-                    source_name, route.source_length or 0, locations,
+                    source_ecuc_name, route.source_length or 0, locations,
                 )
                 rx_probe = self.canif.rx_operation(
                     route, source_name, ecuc_source.object_path, hrh_path or "", locations,
@@ -409,7 +410,8 @@ class DirectRoutePlanner:
                     skipped += 1
                     continue
 
-                target_name = direct_target_name(target.key.target_message_name, target.key.target_channel)
+                target_name = direct_endpoint_name("CanIf", target.key.target_message_name, target.key.target_can_id, target.key.target_channel, "Tx")
+                target_ecuc_name = direct_endpoint_name("EcuC", target.key.target_message_name, target.key.target_can_id, target.key.target_channel, "Tx")
                 dest_name = pdur_leg_name(
                     target.key.target_message_name, target.key.target_can_id, target.key.target_channel,
                 )
@@ -420,7 +422,7 @@ class DirectRoutePlanner:
                     target_ecuc_path = semantic.target.endpoint.ecuc_path
                 else:
                     ecuc_target = self.ecuc.pdu_operation(
-                        target_name, target.target_length or 0, target_location,
+                        target_ecuc_name, target.target_length or 0, target_location,
                     )
                     tx_probe = self.canif.tx_operation(
                         target, target_name, ecuc_target.object_path, buffer_path, target_location,
