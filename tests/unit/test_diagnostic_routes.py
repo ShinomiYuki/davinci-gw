@@ -234,7 +234,7 @@ def test_new_eth_can_side_has_two_pdu_layers_and_no_pdur_changes(diagnostic_case
     tx = index.find_by_short_name(f"GWT_Diag_CanIf_REQ_700_{channel}_Tx")[0]
     assert semantic_values(rx, document.namespace)[0][d.CANIF_RX_CAN_ID_TYPE] == (rx_type,)
     assert semantic_values(tx, document.namespace)[0][d.CANIF_TX_CAN_ID_TYPE] == (tx_type,)
-    tp = index.find_by_short_name(f"GWT_Diag_CanTpChannel_{channel}_700_708")[0]
+    tp = index.find_by_short_name(f"GWT_CanTpChannelGW_{channel}700_708")[0]
     params, refs = semantic_values(tp, document.namespace, recursive=True)
     assert params[d.CANTP_RX + "/CanTpRxDl"] == (str(length),)
     assert params[d.CANTP_TX + "/CanTpTxTaType"] == (ta,)

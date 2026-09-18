@@ -162,6 +162,8 @@ class DiagnosticRoutePlanner:
         rx_type, tx_type, length, ta = channel_properties(endpoint.channel)
         id_type = d.CANIF_RX_CAN_ID_TYPE if rx else d.CANIF_TX_CAN_ID_TYPE
         frames = tuple(n for n in frames if self.values(n)[0].get(id_type) == (rx_type if rx else tx_type,))
+        if not frames:
+            return None
         if len(frames) != 1:
             raise DiagnosticConflict(f"功能寻址 0x{endpoint.request_id:X}/{endpoint.channel} 无唯一匹配帧类型的 CanIf："
                                      f"{[self.path(n) for n in frames]}。")
@@ -306,8 +308,8 @@ class DiagnosticRoutePlanner:
                  (d.CANIF_RX_HRH_REF if rx else d.CANIF_TX_BUFFER_REF): self.hardware(endpoint.channel, rx)}, route))
         parents = [self.path(node.getparent().getparent()) for node in self.index.find_by_definition_ref(d.CANTP_CHANNEL)]
         channel_path = self.create(MutationKind.CANTP_CONTAINER, self.one(parents, "CanTp Channel 父路径"),
-            f"GWT_Diag_CanTpChannel_{safe_name(endpoint.channel)}_{endpoint.request_id:X}_"
-            f"{'Functional' if functional else format(endpoint.response_id, 'X')}",
+            f"GWT_CanTpChannelGW_{safe_name(endpoint.channel)}{endpoint.request_id:X}"
+            f"{'' if functional else '_' + format(endpoint.response_id, 'X')}",
             d.CANTP_CHANNEL, self.template_parameters(d.CANTP_CHANNEL, {}), {}, route)
         objects.append(channel_path)
         # 数据与流控共用同一个底层 N-PDU，按收发方向的联合 ID 空间分配。
@@ -448,7 +450,7 @@ class DiagnosticRoutePlanner:
             else:
                 queue = self.new_queue(route, can_id, source_channel, target_channel)
                 dest_path = self.create(MutationKind.PDUR_DEST_PDU, path,
-                    f"Destination_{safe_name(target_channel)}", d.PDUR_DEST,
+                    f"Diag_TP_{(route.request_endpoint.response_id if is_response else route.response_endpoint.request_id):X}_{safe_name(target_channel)}", d.PDUR_DEST,
                     {d.PDUR_DEST_HANDLE: str(self.pdur.dest_handles.allocate()),
                      d.PDUR_DEST_DIRECTION: "TRANSMIT", d.PDUR_DEST_ROUTING_TYPE: "GATEWAY_ROUTING",
                      d.PDUR_DEST_PROCESSING: "IMMEDIATE", d.PDUR_DEST_LENGTH_STRATEGY: "UNUSED",
