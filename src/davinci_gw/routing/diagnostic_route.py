@@ -490,7 +490,9 @@ class DiagnosticRoutePlanner:
                     f"GWT_Diag_PduR_{can_id:X}_{safe_name(source_channel)}_To_{safe_name(target_channel)}",
                     d.PDUR_PATH, {d.PDUR_PATH_COMM_TYPE: "TRANSPORT_PROTOCOL", d.PDUR_PATH_MULTICORE: "false"},
                     {d.PDUR_PATH_LOCK_REF: self.pdur.lock_ref}, route)
-                self.create(MutationKind.PDUR_SRC_PDU, path, "Source", d.PDUR_SRC,
+                self.create(MutationKind.PDUR_SRC_PDU, path,
+                    f"GWT_Diag_{safe_name(route.response_name)}_0x{can_id:X}_{safe_name(source_channel)}",
+                    d.PDUR_SRC,
                     {d.PDUR_SRC_HANDLE: str(self.pdur.src_handles.allocate()), d.PDUR_SRC_DIRECTION: "RECEIVE"},
                     {d.PDUR_SRC_PDU_REF: source, d.PDUR_SRC_MODULE_REF: module}, route)
                 self.planned_sources[source] = path

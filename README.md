@@ -26,9 +26,11 @@
 
 1.1.2 修正从 `DIAG Message routing(OBD ETH)` 页提取普通 CAN 诊断需求时的配置边界：页名不决定路由类型。明确请求网段为 DG 时，使用 M/P 列的请求/响应 CAN ID 与 K 列目标网段生成双端 CAN 诊断配置及双向 PduR；标准配置表若显式填写请求端 CAN 字段，工具也会读取两端而不忽略请求侧。同 CAN ID 的非 CanTp PDU 保持原样，不再误判为诊断端点。每个新目标腿单独创建 Queue。本版还加快了已有诊断路由组的引用定位。
 
+1.1.3 修复新增 CAN 诊断路由的 PduRSrcPdu 全部命名为 `Source` 导致 DaVinci 报符号名冲突的问题；改为含 ECU、CAN ID、源网段的唯一 `GWT_Diag_...` 短名，沿用基准 ARXML 的命名结构。
+
 源信号“超时值”单独写入 Rx `ComRxDataTimeoutSubstitutionValue`，无需同时填写“超时时间”；不修改 Tx 替代值。新增普通 CanIf/EcuC 名称包含模块、报文名、CAN ID、完整通道与方向，已有名称通过引用复用。
 
-当前不支持直接报文 LIN 路由、多 ARXML 合并和 DaVinci GUI 自动操作。诊断参数与边界见 [1.1.0 发布说明](docs/发布说明_v1.1.0.md)，本次修复见 [1.1.2 发布说明](docs/发布说明_v1.1.2.md)。
+当前不支持直接报文 LIN 路由、多 ARXML 合并和 DaVinci GUI 自动操作。诊断参数与边界见 [1.1.0 发布说明](docs/发布说明_v1.1.0.md)，本次修复见 [1.1.3 发布说明](docs/发布说明_v1.1.3.md)。
 
 ## Windows 桌面版
 
