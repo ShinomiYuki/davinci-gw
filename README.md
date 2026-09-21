@@ -22,9 +22,11 @@
 
 1.1.0 新增标准“诊断报文路由”页，按 CanIf → 底层 EcuC → CanTp → 上层 EcuC → PduR 的真实引用处理物理寻址双向路由与功能寻址单向请求。`OBD_ETH` 仅处理独立 CAN 侧。N 参数和 STmin 输入单位为 ms，写入 ARXML 前转换为秒；BlockSize 为整数。每个新增 PduR 目标腿独占 Queue，物理寻址 Depth=3，7DF/功能寻址 Depth=5，TpThreshold=0。已有对象保持原样，输入参数冲突时报告错误。
 
+1.1.1 修复诊断新增时跨 CAN 网段混用 CanTp 样板的问题：优先使用目标通道中实际引用的同类 N-SDU 推导上层 PDU 长度与非输入参数；通道内无样板时仍要求全局候选唯一。新增 CanTp N-SDU、N-PDU 与流控子容器沿用基准中包含 ECU/网段或 CAN ID 的短名，避免 DaVinci 符号值重名冲突。
+
 源信号“超时值”单独写入 Rx `ComRxDataTimeoutSubstitutionValue`，无需同时填写“超时时间”；不修改 Tx 替代值。新增普通 CanIf/EcuC 名称包含模块、报文名、CAN ID、完整通道与方向，已有名称通过引用复用。
 
-当前不支持直接报文 LIN 路由、多 ARXML 合并和 DaVinci GUI 自动操作。诊断参数与边界见 [1.1.0 发布说明](docs/发布说明_v1.1.0.md)。
+当前不支持直接报文 LIN 路由、多 ARXML 合并和 DaVinci GUI 自动操作。诊断参数与边界见 [1.1.0 发布说明](docs/发布说明_v1.1.0.md)，本次修复见 [1.1.1 发布说明](docs/发布说明_v1.1.1.md)。
 
 ## Windows 桌面版
 

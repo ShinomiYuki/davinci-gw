@@ -1,6 +1,7 @@
 """CAN 诊断引用链规划；仅从完整引用定位端点，不使用 CanTp 名称判定通道。"""
 
 from dataclasses import dataclass
+import re
 
 from davinci_gw.arxml.index import autosar_path
 from davinci_gw.domain.errors import ArxmlStructureError
@@ -223,13 +224,57 @@ class DiagnosticRoutePlanner:
         self.operations.append(operation)
         return operation.object_path
 
-    def transport_templates(self, definition, ta):
+    def cantp_symbolic_name(self, definition, base, endpoint):
+        """沿用基准短名；相同 CAN ID 跨网段时追加端点身份避免符号名冲突。"""
+        def occupied(name):
+            return (any(definition_ref(node, self.ns) == definition
+                        for node in self.index.find_by_short_name(name))
+                    or any(op.definition_ref == definition and op.short_name == name
+                           for op in self.operations))
+
+        if not occupied(base):
+            return base
+        suffix = f"{safe_name(endpoint.channel)}_{endpoint.request_id:X}"
+        if endpoint.response_id is not None:
+            suffix += f"_{endpoint.response_id:X}"
+        disambiguated = f"{base}_{suffix}"
+        if occupied(disambiguated):
+            raise DiagnosticConflict(f"CanTp 符号名 {disambiguated} 已占用，不能重复创建。")
+        return disambiguated
+
+    def transport_templates(self, definition, ta, channel):
         prefix = "CanTpRx" if definition == d.CANTP_RX else "CanTpTx"
         key = f"{definition}/{prefix}TaType"
-        candidates = tuple(n for n in self.index.find_by_definition_ref(definition)
-                           if any(v.endswith(ta.rsplit("_", 1)[-1]) for v in self.values(n)[0].get(key, ())))
-        exact = tuple(n for n in candidates if self.values(n)[0].get(key) == (ta,))
-        return exact or candidates
+        rx = definition == d.CANTP_RX
+        def lower_pdus(receive):
+            frame_definition = d.CANIF_RX if receive else d.CANIF_TX
+            hardware_ref = d.CANIF_RX_HRH_REF if receive else d.CANIF_TX_BUFFER_REF
+            pdu_ref = d.CANIF_RX_PDU_REF if receive else d.CANIF_TX_PDU_REF
+            hardware = self.hardware(channel, receive)
+            return {ref for frame in self.index.find_by_definition_ref(frame_definition)
+                    if self.values(frame)[1].get(hardware_ref) == (hardware,)
+                    for ref in self.values(frame)[1].get(pdu_ref, ())}
+
+        def matches_npdu(sdu, receive, pdus):
+            npdu = d.CANTP_RX_NPDU if receive else d.CANTP_TX_NPDU
+            ref = f"{npdu}/CanTp{'Rx' if receive else 'Tx'}NPduRef"
+            return any(self.values(child)[1].get(ref) == (pdu,)
+                       for child in self.children(sdu, npdu) for pdu in pdus)
+
+        current_pdus = lower_pdus(rx)
+        opposite_pdus = lower_pdus(not rx) if ta.endswith("PHYSICAL") else set()
+        matching = tuple(n for n in self.index.find_by_definition_ref(definition)
+                         if any(v.endswith(ta.rsplit("_", 1)[-1]) for v in self.values(n)[0].get(key, ())))
+        exact = tuple(n for n in matching if self.values(n)[0].get(key) == (ta,))
+        candidates = exact or matching
+        local = tuple(n for n in candidates if matches_npdu(n, rx, current_pdus)
+                      and (not ta.endswith("PHYSICAL") or any(
+                          matches_npdu(sibling, not rx, opposite_pdus)
+                          for sibling in self.children(n.getparent().getparent(),
+                                                       d.CANTP_TX if rx else d.CANTP_RX))))
+        # A channel with no surviving template may still use a globally unique
+        # signature; ambiguity continues to fail in template_parameters/one.
+        return local or candidates
 
     def template_parameters(self, definition, overrides, handle_fields=(), candidates=None):
         """仅复用同类基线中唯一的非输入参数组合，绝不选首个候选兜底。"""
@@ -278,7 +323,7 @@ class DiagnosticRoutePlanner:
                 logical, can_id = route.request_name, endpoint.request_id
             sdu_definition = d.CANTP_RX if rx else d.CANTP_TX
             sdu_ref = d.CANTP_RX_SDU_REF if rx else d.CANTP_TX_SDU_REF
-            templates[rx] = self.transport_templates(sdu_definition, ta)
+            templates[rx] = self.transport_templates(sdu_definition, ta, endpoint.channel)
             sdu_lengths = [value for node in templates[rx]
                            for value in self.values(self.node(self.ref(node, sdu_ref), d.ECUC_PDU))[0].get(d.ECUC_PDU_LENGTH, ())]
             sdu_length = self.one(sdu_lengths, f"{ta} {'Rx' if rx else 'Tx'} 上层 EcuC PduLength")
@@ -312,6 +357,8 @@ class DiagnosticRoutePlanner:
             f"{'' if functional else '_' + format(endpoint.response_id, 'X')}",
             d.CANTP_CHANNEL, self.template_parameters(d.CANTP_CHANNEL, {}), {}, route)
         objects.append(channel_path)
+        ecu_match = re.fullmatch(r"Diag_(.+)_RES", route.response_name, re.IGNORECASE)
+        ecu_name = safe_name(ecu_match.group(1) if ecu_match else route.response_name)
         # 数据与流控共用同一个底层 N-PDU，按收发方向的联合 ID 空间分配。
         npdu_handles = {}
         for receive, definitions in (
@@ -333,7 +380,9 @@ class DiagnosticRoutePlanner:
             prefix = "CanTpRx" if rx else "CanTpTx"
             parameters = self.transport_values(endpoint, rx) | {f"{definition}/{prefix}Dl": str(length),
                                                               f"{definition}/{prefix}TaType": ta}
-            sdu_path = self.create(MutationKind.CANTP_CONTAINER, channel_path, prefix + "NSdu", definition,
+            sdu_path = self.create(MutationKind.CANTP_CONTAINER, channel_path,
+                self.cantp_symbolic_name(definition,
+                    f"{prefix}NSdu_{ecu_name}_{safe_name(endpoint.channel)}", endpoint), definition,
                 self.template_parameters(definition, parameters, (f"{definition}/{prefix}NSduId",), templates[rx]),
                 {(d.CANTP_RX_SDU_REF if rx else d.CANTP_TX_SDU_REF): upper[rx]}, route)
             children = ((d.CANTP_RX_NPDU, "CanTpRxNPduRef", "CanTpRxNPduId", True),
@@ -343,7 +392,10 @@ class DiagnosticRoutePlanner:
             for child_def, ref, handle, receive in children:
                 if functional and receive != rx:
                     continue
-                self.create(MutationKind.CANTP_CONTAINER, sdu_path, child_def.rsplit("/", 1)[-1], child_def,
+                self.create(MutationKind.CANTP_CONTAINER, sdu_path,
+                    self.cantp_symbolic_name(child_def,
+                        f"{child_def.rsplit('/', 1)[-1]}_{(rx_id if receive else tx_id):X}", endpoint),
+                    child_def,
                     self.template_parameters(child_def, {f"{child_def}/{handle}": npdu_handles[receive]}),
                     {f"{child_def}/{ref}": lower[receive]}, route)
         chain = CanDiagnosticChain(channel_path, upper.get(True, ""), upper.get(False, ""), tuple(objects))

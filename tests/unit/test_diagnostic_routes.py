@@ -9,6 +9,7 @@ from openpyxl import load_workbook
 
 from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.arxml.index import autosar_path
+from davinci_gw.domain.errors import OutputValidationError
 from davinci_gw.domain.models import (
     DiagnosticEndpoint, DiagnosticRouteChange, MutationAction, OperationType,
     ReferenceDataEntry, SourceLocation, WorkbookData,
@@ -242,6 +243,64 @@ def test_new_eth_can_side_has_two_pdu_layers_and_no_pdur_changes(diagnostic_case
     repeated = TransactionCoordinator(document, workbook).plan_and_apply()
     assert not repeated.errors, repeated.issues
     assert not repeated.operations
+
+
+def test_new_eth_selects_upper_pdu_length_from_target_channel(diagnostic_case):
+    document, workbook, _, _ = diagnostic_case
+    index = document.build_index()
+    ns = document.namespace
+    for name in ("HighSRC_CANRx", "HighSRC_CANTx"):
+        pdu = index.find_by_short_name(name)[0]
+        for entry in pdu.find(f"{{{ns}}}PARAMETER-VALUES"):
+            if entry.findtext(f"{{{ns}}}DEFINITION-REF") == d.ECUC_PDU_LENGTH:
+                entry.find(f"{{{ns}}}VALUE").text = "8"
+    # 两个网段共用 HRH，但 TxBuffer 各自独立；Rx 样板必须结合 Channel 的 Tx 腿归属。
+    source_rx = index.find_by_short_name("FrameSRC_CANRx")[0]
+    for entry in source_rx.find(f"{{{ns}}}REFERENCE-VALUES"):
+        if entry.findtext(f"{{{ns}}}DEFINITION-REF") == d.CANIF_RX_HRH_REF:
+            entry.find(f"{{{ns}}}VALUE-REF").text = autosar_path(
+                index.find_by_short_name("HRH2")[0], ns)
+    original = workbook.diagnostic_routes[0]
+    route = replace(original, entry_type="OBD_ETH", request_endpoint=None,
+                    response_endpoint=replace(original.response_endpoint, request_id=0x700, response_id=0x708))
+    plan = TransactionCoordinator(document, replace(workbook, diagnostic_routes=(route,))).plan_and_apply()
+    assert not plan.errors, plan.issues
+    assert plan.diagnostic_added_count == 1
+    index = document.build_index()
+    for name in ("GWT_Diag_Tp_EcuC_RES_708_DST_CAN_Rx", "GWT_Diag_Tp_EcuC_REQ_700_DST_CAN_Tx"):
+        pdu = index.find_by_short_name(name)[0]
+        assert semantic_values(pdu, ns)[0][d.ECUC_PDU_LENGTH] == ("64",)
+
+
+def test_multiple_new_eth_channels_have_unique_cantp_symbolic_names(diagnostic_case):
+    document, workbook, _, _ = diagnostic_case
+    original = workbook.diagnostic_routes[0]
+    first = replace(original, entry_type="OBD_ETH", request_endpoint=None,
+                    request_name="Diag_ALPHA_REQ", response_name="Diag_ALPHA_RES",
+                    response_endpoint=replace(original.response_endpoint, request_id=0x700, response_id=0x708))
+    second = replace(first, request_name="Diag_BETA_REQ", response_name="Diag_BETA_RES",
+                     response_endpoint=replace(first.response_endpoint,
+                     request_id=0x701, response_id=0x709), source=SourceLocation("诊断报文路由", 3))
+    plan = TransactionCoordinator(document, replace(workbook, diagnostic_routes=(first, second))).plan_and_apply()
+    assert not plan.errors, plan.issues
+    assert plan.diagnostic_added_count == 2
+    index = document.build_index()
+    for ecu, request, response in (("ALPHA", "700", "708"), ("BETA", "701", "709")):
+        channel = index.find_by_short_name(f"GWT_CanTpChannelGW_DST_CAN{request}_{response}")[0]
+        names = {node.findtext(f"{{{document.namespace}}}SHORT-NAME")
+                 for node in channel.iter() if node.findtext(f"{{{document.namespace}}}DEFINITION-REF") in {
+                     d.CANTP_RX, d.CANTP_TX, d.CANTP_RX_NPDU,
+                     d.CANTP_TX_FC, d.CANTP_RX_FC, d.CANTP_TX_NPDU}}
+        assert names == {
+            f"CanTpRxNSdu_{ecu}_DST_CAN", f"CanTpTxNSdu_{ecu}_DST_CAN",
+            f"CanTpRxNPdu_{response}", f"CanTpTxFcNPdu_{request}",
+            f"CanTpRxFcNPdu_{response}", f"CanTpTxNPdu_{request}",
+        }
+    validate_generated_output(document, plan)
+    duplicated = index.find_by_short_name("CanTpRxNSdu_BETA_DST_CAN")[0]
+    duplicated.find(f"{{{document.namespace}}}SHORT-NAME").text = "CanTpRxNSdu_ALPHA_DST_CAN"
+    with pytest.raises(OutputValidationError, match="CanTp 符号名"):
+        validate_generated_output(document, plan)
 
 
 def test_new_can_destination_gets_dedicated_queue(diagnostic_case):

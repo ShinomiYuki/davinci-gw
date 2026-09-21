@@ -16,7 +16,16 @@ from davinci_gw.routing.routing_group_membership import (
 
 HANDLE_DEFINITIONS = (
     defs.CANIF_RX_HANDLE, defs.CANIF_TX_HANDLE, defs.PDUR_SRC_HANDLE, defs.PDUR_DEST_HANDLE,
+    f"{defs.CANTP_RX}/CanTpRxNSduId", f"{defs.CANTP_TX}/CanTpTxNSduId",
+    f"{defs.CANTP_RX_NPDU}/CanTpRxNPduId",
+    f"{defs.CANTP_TX_FC}/CanTpTxFcNPduConfirmationPduId",
+    f"{defs.CANTP_RX_FC}/CanTpRxFcNPduId",
+    f"{defs.CANTP_TX_NPDU}/CanTpTxNPduConfirmationPduId",
 )
+CANTP_SYMBOLIC_CONTAINERS = frozenset({
+    defs.CANTP_RX, defs.CANTP_TX, defs.CANTP_RX_NPDU,
+    defs.CANTP_TX_FC, defs.CANTP_RX_FC, defs.CANTP_TX_NPDU,
+})
 
 
 def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> None:
@@ -126,6 +135,14 @@ def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> No
             failures.append(
                 f"本次新增确定性UUID“{value}”在输出中出现{output_uuids[value]}次，计划为唯一值"
             )
+    for operation in plan.operations:
+        if (operation.action is MutationAction.CREATE
+                and operation.definition_ref in CANTP_SYMBOLIC_CONTAINERS):
+            named = [node for node in index.find_by_short_name(operation.short_name)
+                     if definition_ref(node, document.namespace) == operation.definition_ref]
+            if len(named) != 1:
+                failures.append(f"本次新增 CanTp 符号名“{operation.short_name}”"
+                                f"在定义“{operation.definition_ref}”下出现{len(named)}次，必须唯一")
     planned_handles: Counter[tuple[str, str]] = Counter()
     for operation in plan.operations:
         if operation.action is not MutationAction.CREATE:
