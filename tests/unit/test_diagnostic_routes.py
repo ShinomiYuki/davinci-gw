@@ -57,6 +57,37 @@ def test_read_diagnostic_milliseconds_and_can_only(workbook_factory, entry):
     assert (route.request_endpoint is None) == (entry == "OBD_ETH")
 
 
+def test_obd_eth_with_explicit_dg_request_reads_both_can_endpoints(workbook_factory):
+    path = workbook_factory(direct_rows=(), signal_rows=())
+    book = load_workbook(path)
+    sheet = book.create_sheet("诊断报文路由")
+    sheet.append(DIAGNOSTIC_HEADERS)
+    row = diagnostic_row("OBD_CAN")
+    row["诊断入口类型"] = "OBD_ETH"
+    sheet.append([row.get(field) for field in DIAGNOSTIC_HEADERS])
+    book.save(path)
+    result = read_workbook(path)
+    assert result.is_valid, result.issues
+    route = result.data.diagnostic_routes[0]
+    assert route.request_endpoint is not None
+    assert route.request_endpoint.channel == "SRC_CAN"
+    assert route.response_endpoint.channel == "DST_CAN"
+
+
+def test_obd_eth_request_transport_only_keeps_single_can_endpoint(workbook_factory):
+    path = workbook_factory(direct_rows=(), signal_rows=())
+    book = load_workbook(path)
+    sheet = book.create_sheet("诊断报文路由")
+    sheet.append(DIAGNOSTIC_HEADERS)
+    row = diagnostic_row("OBD_ETH")
+    row["诊断请求端N_As"] = 100
+    sheet.append([row.get(field) for field in DIAGNOSTIC_HEADERS])
+    book.save(path)
+    result = read_workbook(path)
+    assert result.is_valid, result.issues
+    assert result.data.diagnostic_routes[0].request_endpoint is None
+
+
 def test_missing_transport_parameter_has_no_default(workbook_factory):
     path = workbook_factory(direct_rows=(), signal_rows=())
     book = load_workbook(path)
@@ -191,6 +222,44 @@ def test_complete_reference_chain_is_idempotent_despite_misleading_names(diagnos
     assert not plan.errors, plan.issues
     assert plan.diagnostic_existing_count == 1
     assert not plan.operations
+
+
+def test_can_route_from_obd_eth_sheet_adds_bidirectional_pdur(diagnostic_case):
+    document, workbook, _, _ = diagnostic_case
+    original = workbook.diagnostic_routes[0]
+    route = replace(original, source=SourceLocation("DIAG Message routing(OBD ETH)", 18),
+                    request_endpoint=replace(original.request_endpoint, request_id=0x700, response_id=0x708),
+                    response_endpoint=replace(original.response_endpoint, request_id=0x700, response_id=0x708))
+    plan = TransactionCoordinator(document, replace(workbook, diagnostic_routes=(route,))).plan_and_apply()
+    assert not plan.errors, plan.issues
+    assert plan.diagnostic_added_count == 1
+    assert sum(op.definition_ref == d.PDUR_PATH for op in plan.operations) == 2
+    assert sum(op.definition_ref == d.PDUR_DEST for op in plan.operations) == 2
+    assert sum(op.definition_ref == d.PDUR_QUEUE for op in plan.operations) == 2
+    validate_generated_output(document, plan)
+
+
+def test_unrelated_canif_with_same_can_id_does_not_block_diagnostic_route(diagnostic_case):
+    document, workbook, container, group = diagnostic_case
+    index = document.build_index()
+    frame = index.find_by_short_name("FrameSRC_CANTx")[0]
+    canif_parent = frame.getparent()
+    buffer = index.find_by_short_name("TX")[0]
+    lower = index.find_by_short_name("LowSRC_CANTx")[0]
+    unrelated = container(canif_parent, "UnrelatedTx708", d.CANIF_TX,
+        {d.CANIF_TX_CAN_ID: str(0x708), d.CANIF_TX_CONFIRM_UL: "PDUR"},
+        {d.CANIF_TX_BUFFER_REF: autosar_path(buffer, document.namespace),
+         d.CANIF_TX_PDU_REF: autosar_path(lower, document.namespace)})
+    original = workbook.diagnostic_routes[0]
+    route = replace(original,
+                    request_endpoint=replace(original.request_endpoint, request_id=0x700, response_id=0x708),
+                    response_endpoint=replace(original.response_endpoint, request_id=0x700, response_id=0x708))
+    plan = TransactionCoordinator(document, replace(workbook, diagnostic_routes=(route,))).plan_and_apply()
+    assert not plan.errors, plan.issues
+    assert plan.diagnostic_added_count == 1
+    assert document.build_index().find_by_path(autosar_path(unrelated, document.namespace))
+    assert sum(op.definition_ref == d.PDUR_PATH for op in plan.operations) == 2
+    validate_generated_output(document, plan)
 
 
 def test_delete_can_pair_preserves_other_destination_and_shared_endpoint(diagnostic_case):

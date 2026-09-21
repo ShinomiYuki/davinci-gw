@@ -137,7 +137,7 @@ class DiagnosticEndpoint:
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticRouteChange:
-    """原子 CAN 诊断需求；OBD_ETH 仅有应答端 CAN 配置。"""
+    """原子 CAN 诊断需求；明确请求 CAN 端点时包含双向网关路由。"""
 
     operation: OperationType
     entry_type: str

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-MCP_VERSION = "1.1.1"
+MCP_VERSION = "1.1.2"
 
 
 def _build_info_path() -> Path:

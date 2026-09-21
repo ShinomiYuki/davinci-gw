@@ -24,9 +24,11 @@
 
 1.1.1 修复诊断新增时跨 CAN 网段混用 CanTp 样板的问题：优先使用目标通道中实际引用的同类 N-SDU 推导上层 PDU 长度与非输入参数；通道内无样板时仍要求全局候选唯一。新增 CanTp N-SDU、N-PDU 与流控子容器沿用基准中包含 ECU/网段或 CAN ID 的短名，避免 DaVinci 符号值重名冲突。
 
+1.1.2 修正从 `DIAG Message routing(OBD ETH)` 页提取普通 CAN 诊断需求时的配置边界：页名不决定路由类型。明确请求网段为 DG 时，使用 M/P 列的请求/响应 CAN ID 与 K 列目标网段生成双端 CAN 诊断配置及双向 PduR；标准配置表若显式填写请求端 CAN 字段，工具也会读取两端而不忽略请求侧。同 CAN ID 的非 CanTp PDU 保持原样，不再误判为诊断端点。每个新目标腿单独创建 Queue。本版还加快了已有诊断路由组的引用定位。
+
 源信号“超时值”单独写入 Rx `ComRxDataTimeoutSubstitutionValue`，无需同时填写“超时时间”；不修改 Tx 替代值。新增普通 CanIf/EcuC 名称包含模块、报文名、CAN ID、完整通道与方向，已有名称通过引用复用。
 
-当前不支持直接报文 LIN 路由、多 ARXML 合并和 DaVinci GUI 自动操作。诊断参数与边界见 [1.1.0 发布说明](docs/发布说明_v1.1.0.md)，本次修复见 [1.1.1 发布说明](docs/发布说明_v1.1.1.md)。
+当前不支持直接报文 LIN 路由、多 ARXML 合并和 DaVinci GUI 自动操作。诊断参数与边界见 [1.1.0 发布说明](docs/发布说明_v1.1.0.md)，本次修复见 [1.1.2 发布说明](docs/发布说明_v1.1.2.md)。
 
 ## Windows 桌面版
 

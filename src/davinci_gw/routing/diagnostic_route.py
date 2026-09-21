@@ -87,9 +87,11 @@ class DiagnosticRoutePlanner:
         definition = d.CANIF_RX if rx else d.CANIF_TX
         id_def = d.CANIF_RX_CAN_ID if rx else d.CANIF_TX_CAN_ID
         hw_def = d.CANIF_RX_HRH_REF if rx else d.CANIF_TX_BUFFER_REF
+        upper_def = d.CANIF_RX_INDICATION_UL if rx else d.CANIF_TX_CONFIRM_UL
         hardware = self.hardware(channel, rx)
         return tuple(n for n in self.index.find_by_definition_ref(definition)
                      if self.values(n)[0].get(id_def) == (str(can_id),)
+                     and self.values(n)[0].get(upper_def) == ("CAN_TP",)
                      and self.values(n)[1].get(hw_def) == (hardware,))
 
     def check_frame(self, node, endpoint, rx):
@@ -545,15 +547,22 @@ class DiagnosticRoutePlanner:
         """只沿 CanTp 上层引用反查底层 Tx Buffer，不读路径名称。"""
         upper = self.ref(destination, d.PDUR_DEST_PDU_REF)
         lower = set()
-        for sdu in self.index.find_by_definition_ref(d.CANTP_TX):
-            if self.values(sdu)[1].get(d.CANTP_TX_SDU_REF) == (upper,):
-                for npdu in self.children(sdu, d.CANTP_TX_NPDU):
-                    lower.update(self.values(npdu)[1].get(f"{d.CANTP_TX_NPDU}/CanTpTxNPduRef", ()))
+        for reference in self.index.find_referrers(upper):
+            if definition_ref(reference, self.ns) != d.CANTP_TX_SDU_REF:
+                continue
+            sdu = reference.getparent().getparent()
+            if definition_ref(sdu, self.ns) != d.CANTP_TX:
+                continue
+            for npdu in self.children(sdu, d.CANTP_TX_NPDU):
+                lower.update(self.values(npdu)[1].get(f"{d.CANTP_TX_NPDU}/CanTpTxNPduRef", ()))
         buffers = set()
-        for frame in self.index.find_by_definition_ref(d.CANIF_TX):
-            refs = self.values(frame)[1]
-            if set(refs.get(d.CANIF_TX_PDU_REF, ())) & lower:
-                buffers.update(refs.get(d.CANIF_TX_BUFFER_REF, ()))
+        for pdu in lower:
+            for reference in self.index.find_referrers(pdu):
+                if definition_ref(reference, self.ns) != d.CANIF_TX_PDU_REF:
+                    continue
+                frame = reference.getparent().getparent()
+                if definition_ref(frame, self.ns) == d.CANIF_TX:
+                    buffers.update(self.values(frame)[1].get(d.CANIF_TX_BUFFER_REF, ()))
         channels = set()
         for channel, entry in self.references.items():
             state, node = unique_named_node(self.index, self.ns, entry.tx_buffer_name or "", d.CANIF_BUFFER)

@@ -1,4 +1,4 @@
-"""读取 Skill 标准诊断页；OBD ETH 仅代表独立 CAN 侧，不扩展到 DoIP。"""
+"""读取标准诊断页；有明确请求 CAN 端点时按双端 CAN 路由处理。"""
 
 from decimal import Decimal
 
@@ -29,7 +29,9 @@ def read_diagnostics(sheet, mapping, path, issues, references):
             continue
         _required(row, ("诊断请求端报文名称", "诊断应答端报文名称"), path, sheet.title, number, issues)
         endpoints = {}
-        for role in (("请求", "应答") if entry == "OBD_CAN" else ("应答",)):
+        request_fields = ("诊断请求端CANID_REQ", "诊断请求端CANID_RES", "诊断请求端CAN通道")
+        has_can_request = entry == "OBD_CAN" or any(not _is_blank(row.get(field)) for field in request_fields)
+        for role in (("请求", "应答") if has_can_request else ("应答",)):
             prefix = f"诊断{role}端"
             identity = tuple(prefix + suffix for suffix in ("CANID_REQ", "CANID_RES", "CAN通道"))
             functional = _is_blank(row.get(prefix + "CANID_RES")) or row.get(prefix + "CANID_RES") == "/"

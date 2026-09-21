@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
         advanced_layout = QGridLayout(self.advanced_panel)
         self.operation_label = QLabel("—")
         self.session_label = QLabel("—")
-        self.version_label = QLabel("1.1.1")
+        self.version_label = QLabel("1.1.2")
         self.open_log_button = QPushButton("打开日志目录")
         advanced_layout.addWidget(QLabel("操作 ID"), 0, 0)
         advanced_layout.addWidget(self.operation_label, 0, 1)
