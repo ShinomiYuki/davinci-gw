@@ -44,6 +44,7 @@ class DiagnosticRoutePlanner:
         self.endpoint_cache = {}
         self.planned_sources = {}
         self.planned_destinations = {}
+        self.planned_path_queues = {}
 
     def path(self, node):
         return autosar_path(node, self.ns)
@@ -422,6 +423,7 @@ class DiagnosticRoutePlanner:
             saved_endpoints = self.endpoint_cache.copy()
             saved_sources = self.planned_sources.copy()
             saved_destinations = self.planned_destinations.copy()
+            saved_queues = self.planned_path_queues.copy()
             try:
                 for endpoint, request_side in ((route.request_endpoint, True), (route.response_endpoint, False)):
                     if endpoint:
@@ -442,6 +444,7 @@ class DiagnosticRoutePlanner:
                 self.endpoint_cache = saved_endpoints
                 self.planned_sources = saved_sources
                 self.planned_destinations = saved_destinations
+                self.planned_path_queues = saved_queues
                 issues.append(replace(self.issue(route, exc), code="DIAGNOSTIC_CHANNEL_REFERENCE_SKIPPED",
                                       severity=ValidationSeverity.WARNING))
                 skipped += 1
@@ -450,6 +453,7 @@ class DiagnosticRoutePlanner:
                 self.endpoint_cache = saved_endpoints
                 self.planned_sources = saved_sources
                 self.planned_destinations = saved_destinations
+                self.planned_path_queues = saved_queues
                 issues.append(self.issue(route, exc))
         return MutationPlan(operations=tuple(self.operations), issues=tuple(issues),
                             diagnostic_added_count=added, diagnostic_existing_count=existing,
@@ -504,9 +508,31 @@ class DiagnosticRoutePlanner:
                 self.node(queue)
                 dest_path = self.path(destination)
             else:
-                queue = self.new_queue(route, can_id, source_channel, target_channel)
+                destination_id = (route.request_endpoint.response_id if is_response
+                                  else route.response_endpoint.request_id)
+                destination_name = f"Diag_TP_{destination_id:X}_{safe_name(target_channel)}"
+                def occupied(name):
+                    return (any(definition_ref(node, self.ns) == d.PDUR_DEST
+                                for node in self.index.find_by_short_name(name))
+                            or any(op.definition_ref == d.PDUR_DEST and op.short_name == name
+                                   for op in self.operations))
+                if occupied(destination_name):
+                    destination_name = (f"GWT_Diag_TP_{destination_id:X}_"
+                                        f"{safe_name(source_channel)}_To_{safe_name(target_channel)}")
+                if occupied(destination_name):
+                    raise DiagnosticConflict(f"PduR 目标符号名 {destination_name} 已占用，不能重复创建。")
+                queue = self.planned_path_queues.get(path)
+                if queue is None and sources:
+                    existing_queues = {value for child in self.children(path_node, d.PDUR_DEST)
+                                       for value in self.values(child)[1].get(d.PDUR_QUEUE_REF, ())}
+                    if existing_queues:
+                        queue = self.one(existing_queues, f"路径 {path} 的既有目标 Queue")
+                        self.node(queue, d.PDUR_QUEUE)
+                if queue is None:
+                    queue = self.new_queue(route, can_id, source_channel, target_channel)
+                self.planned_path_queues[path] = queue
                 dest_path = self.create(MutationKind.PDUR_DEST_PDU, path,
-                    f"Diag_TP_{(route.request_endpoint.response_id if is_response else route.response_endpoint.request_id):X}_{safe_name(target_channel)}", d.PDUR_DEST,
+                    destination_name, d.PDUR_DEST,
                     {d.PDUR_DEST_HANDLE: str(self.pdur.dest_handles.allocate()),
                      d.PDUR_DEST_DIRECTION: "TRANSMIT", d.PDUR_DEST_ROUTING_TYPE: "GATEWAY_ROUTING",
                      d.PDUR_DEST_PROCESSING: "IMMEDIATE", d.PDUR_DEST_LENGTH_STRATEGY: "UNUSED",

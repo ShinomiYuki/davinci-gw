@@ -17,7 +17,7 @@ from davinci_gw.domain.models import (
 from davinci_gw.input.workbook_reader import read_workbook
 from davinci_gw.input.workbook_schema import DIAGNOSTIC_HEADERS, DIAGNOSTIC_TRANSPORT_FIELDS
 from davinci_gw.modules import definitions as d
-from davinci_gw.modules.common import semantic_values
+from davinci_gw.modules.common import definition_ref, semantic_values
 from davinci_gw.routing.add import AddCoordinator
 from davinci_gw.routing.delete import DeleteCoordinator
 from davinci_gw.routing.diagnostic_route import DiagnosticRoutePlanner
@@ -239,6 +239,23 @@ def test_can_route_from_obd_eth_sheet_adds_bidirectional_pdur(diagnostic_case):
     validate_generated_output(document, plan)
 
 
+def test_new_pdur_destination_avoids_existing_symbolic_name(diagnostic_case):
+    document, workbook, container, group = diagnostic_case
+    existing_path = document.build_index().find_by_short_name("Req")[0]
+    container(group(existing_path, "SUB-CONTAINERS"), "Diag_TP_700_DST_CAN", d.PDUR_DEST,
+              {d.PDUR_DEST_HANDLE: "99"})
+    original = workbook.diagnostic_routes[0]
+    route = replace(original,
+                    request_endpoint=replace(original.request_endpoint, request_id=0x700, response_id=0x708),
+                    response_endpoint=replace(original.response_endpoint, request_id=0x700, response_id=0x708))
+    plan = TransactionCoordinator(document, replace(workbook, diagnostic_routes=(route,))).plan_and_apply()
+    assert not plan.errors, plan.issues
+    destination_names = {op.short_name for op in plan.operations if op.definition_ref == d.PDUR_DEST}
+    assert "GWT_Diag_TP_700_SRC_CAN_To_DST_CAN" in destination_names
+    assert "Diag_TP_700_DST_CAN" not in destination_names
+    validate_generated_output(document, plan)
+
+
 def test_unrelated_canif_with_same_can_id_does_not_block_diagnostic_route(diagnostic_case):
     document, workbook, container, group = diagnostic_case
     index = document.build_index()
@@ -390,6 +407,48 @@ def test_new_can_destination_gets_dedicated_queue(diagnostic_case):
     repeated = TransactionCoordinator(document, workbook).plan_and_apply()
     assert not repeated.errors, repeated.issues
     assert not repeated.operations
+
+
+@pytest.mark.parametrize("existing_path", [True, False])
+def test_destinations_in_same_transport_path_share_queue(diagnostic_case, existing_path):
+    document, workbook, _, _ = diagnostic_case
+    index = document.build_index()
+    if not existing_path:
+        request = index.find_by_short_name("Req")[0]
+        request.getparent().remove(request)
+    original = workbook.diagnostic_routes[0]
+    first = replace(original, response_endpoint=replace(original.response_endpoint,
+                    request_id=0x700, response_id=0x708))
+    second = replace(first, source=SourceLocation("诊断报文路由", 3),
+                     response_endpoint=replace(first.response_endpoint,
+                     request_id=0x701, response_id=0x709))
+    plan = TransactionCoordinator(document, replace(workbook,
+                                  diagnostic_routes=(first, second))).plan_and_apply()
+    assert not plan.errors, plan.issues
+    assert plan.diagnostic_added_count == 2
+    index = document.build_index()
+    path_name = "Req" if existing_path else "GWT_Diag_PduR_7E0_SRC_CAN_To_DST_CAN"
+    request_path = index.find_by_short_name(path_name)[0]
+    destinations = [node for node in request_path.iter()
+                    if definition_ref(node, document.namespace) == d.PDUR_DEST]
+    queues = {semantic_values(node, document.namespace)[1].get(d.PDUR_QUEUE_REF)
+              for node in destinations}
+    assert len(destinations) == (3 if existing_path else 2)
+    assert len(queues) == 1
+    if existing_path:
+        assert queues == {(autosar_path(index.find_by_short_name("Queue")[0], document.namespace),)}
+        assert not index.find_by_short_name("GWT_Diag_PduRQueue_7E0_SRC_CAN_To_DST_CAN")
+    validate_generated_output(document, plan)
+    if existing_path:
+        original_dest = next(node for node in destinations
+                             if node.findtext(f"{{{document.namespace}}}SHORT-NAME") == "Dest")
+        queue_ref = next(node for node in original_dest.iter()
+                         if definition_ref(node, document.namespace) == d.PDUR_QUEUE_REF)
+        other_queue = next(node for node in index.find_by_definition_ref(d.PDUR_QUEUE)
+                           if node.findtext(f"{{{document.namespace}}}SHORT-NAME").startswith("GWT_Diag_"))
+        queue_ref.find(f"{{{document.namespace}}}VALUE-REF").text = autosar_path(other_queue, document.namespace)
+        with pytest.raises(OutputValidationError, match="PduR N:M"):
+            validate_generated_output(document, plan)
 
 
 def test_dedicated_queue_delete_and_readd_cycle(diagnostic_case):

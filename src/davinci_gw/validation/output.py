@@ -127,6 +127,26 @@ def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> No
                 f"计划保留对象“{decision.object_path}”未在输出中唯一保留：{decision.reason}"
             )
 
+    affected_pdur_paths = {
+        operation.parent_path for operation in plan.operations
+        if operation.action is MutationAction.CREATE and operation.definition_ref == defs.PDUR_DEST
+    }
+    for path in affected_pdur_paths:
+        nodes = index.find_by_path(path)
+        if len(nodes) != 1:
+            continue
+        path_parameters, _ = semantic_values(nodes[0], document.namespace)
+        if path_parameters.get(defs.PDUR_PATH_COMM_TYPE) != ("TRANSPORT_PROTOCOL",):
+            continue
+        destinations = [node for node in nodes[0].iter()
+                        if definition_ref(node, document.namespace) == defs.PDUR_DEST]
+        if len(destinations) < 2:
+            continue
+        queues = {semantic_values(node, document.namespace)[1].get(defs.PDUR_QUEUE_REF, ())
+                  for node in destinations}
+        if len(queues) != 1 or len(next(iter(queues))) != 1:
+            failures.append(f"PduR N:M 路径“{path}”的目标 PDU 未共用同一个 Queue")
+
     output_uuids = Counter(
         node.get("UUID") for node in document.root.iter() if node.get("UUID")
     )
