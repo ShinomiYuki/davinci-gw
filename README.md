@@ -2,6 +2,12 @@
 
 本工具读取上游生成的标准网关路由配置表和旧版 DaVinci/MICROSAR 工程导出的完整 ARXML，一次处理直接报文、信号及 CAN 诊断路由的 `ADD`/`DELETE`，生成新版完整 ARXML。配置表和基准 ARXML 始终只读。
 
+## 主仓库与公司镜像
+
+本项目的主仓库是 [GitHub：ShinomiYuki/davinci-gw](https://github.com/ShinomiYuki/davinci-gw)。[公司 GitLab：hao.xin/davinci-gw-mirror](http://192.168.8.160/hao.xin/davinci-gw-mirror) **仅为镜像仓库**，用于公司内网查看和克隆，不作为独立开发入口。
+
+功能需求、问题反馈统一到主仓库提交 [Issue](https://github.com/ShinomiYuki/davinci-gw/issues)，代码贡献统一到主仓库提交 [Pull Request（PR）](https://github.com/ShinomiYuki/davinci-gw/pulls)，请勿在镜像仓库提交 Issue 或 Merge Request。镜像同步 Git 分支、提交历史和标签；安装包及发布说明以主仓库的 [GitHub Releases](https://github.com/ShinomiYuki/davinci-gw/releases) 为准。
+
 ## 可以做什么
 
 - 校验配置表版本、工作表、字段、重复和替换对。
