@@ -34,6 +34,8 @@
 
 当前不支持直接报文 LIN 路由、多 ARXML 合并和 DaVinci GUI 自动操作。诊断参数与边界见 [1.1.0 发布说明](docs/发布说明_v1.1.0.md)，本次修复见 [1.1.4 发布说明](docs/发布说明_v1.1.4.md)。
 
+上游配置表 Skill 的维护源码位于 [skills/build-gateway-routing-config](skills/build-gateway-routing-config/SKILL.md)，以独立标签 `skill-v1.2.0` 发布。空白模板新增七列 `DoIP_to_CAN`，按原始需求中的 logicalAddress、实际 Tester 与 CAN 请求/响应汇总映射，支持按项目打点或明确行号选择范围。这是 DoIP→CAN 开发的前置输入；当前工具 1.1.4 不读取该页，也不生成 DoIP/SoAd 或跨协议 PduR。模板同时更新“需求描述”并删除三张旧说明页，详情见 [Skill 1.2.0 发布说明](docs/Skill发布说明_v1.2.0.md)。
+
 ## Windows 桌面版
 
 提供 `davinci-gw-gui.exe` 免安装桌面程序。用户解压 ZIP 后直接双击 EXE，不需要安装 Python，也不需要配置 PATH。界面按“选择配置表 → 选择基准 ARXML → 预览 → 生成”工作：预览成功后复用同一份内存事务生成，不会再次解析大型基准文件。

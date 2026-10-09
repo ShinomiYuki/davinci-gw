@@ -1,0 +1,4 @@
+interface:
+  display_name: "网关路由配置与DoIP转CAN映射"
+  short_description: "从原始需求生成报文、信号、CAN诊断配置及DoIP转CAN映射表"
+  default_prompt: "使用 $build-gateway-routing-config 根据我提供的原始需求和项目范围，生成标准网关配置表；DoIP转CAN按逻辑地址汇总实际Tester和CAN请求/响应映射。"
