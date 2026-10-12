@@ -19,7 +19,9 @@ class TransportQueueGroups:
             self.destinations[path] = []
             for child in node.iter():
                 if definition_ref(child, namespace) == d.PDUR_DEST:
-                    _, references = semantic_values(child, namespace)
+                    parameters, references = semantic_values(child, namespace)
+                    if parameters.get(d.PDUR_DEST_ROUTING_TYPE) == ("API_FORWARDING",):
+                        continue
                     self.destinations[path].append((
                         references.get(d.PDUR_DEST_PDU_REF, ()),
                         references.get(d.PDUR_QUEUE_REF, ()),
@@ -36,6 +38,7 @@ class TransportQueueGroups:
         for operation in operations:
             if (operation.action is MutationAction.CREATE
                     and operation.definition_ref == d.PDUR_DEST
+                    and operation.parameter(d.PDUR_DEST_ROUTING_TYPE) != "API_FORWARDING"
                     and operation.parent_path in destinations):
                 destinations[operation.parent_path].append((
                     (operation.reference(d.PDUR_DEST_PDU_REF),),

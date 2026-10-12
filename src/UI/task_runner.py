@@ -39,11 +39,11 @@ class _GatewayWorker(QObject):
     def initialize(self) -> None:
         self._facade = GatewayFacade()
 
-    @Slot(str, str, str, object)
-    def preview(self, task_id: str, config_path: str, baseline_path: str, token: CancellationToken) -> None:
+    @Slot(str, str, str, object, object)
+    def preview(self, task_id: str, config_path: str, baseline_path: str, token: CancellationToken, doip_missing_policy: str | None) -> None:
         assert self._facade is not None
         result = self._facade.preview(
-            UpdateRequestDto(config_path, baseline_path),
+            UpdateRequestDto(config_path, baseline_path, doip_missing_policy=doip_missing_policy),
             observer=_ProgressBridge(self.progress.emit),
             cancellation=token,
         )
@@ -89,7 +89,7 @@ class QtTaskRunner(QObject):
     generation_finished = Signal(object)
     stopped = Signal()
 
-    _preview_requested = Signal(str, str, str, object)
+    _preview_requested = Signal(str, str, str, object, object)
     _commit_requested = Signal(str, str, str, object)
     _discard_requested = Signal(str)
     _shutdown_requested = Signal()
@@ -129,9 +129,9 @@ class QtTaskRunner(QObject):
         self._token = CancellationToken()
         return self._token
 
-    def start_preview(self, task_id: str, config_path: str, baseline_path: str) -> None:
+    def start_preview(self, task_id: str, config_path: str, baseline_path: str, doip_missing_policy: str | None = None) -> None:
         token = self._start(task_id)
-        self._preview_requested.emit(task_id, config_path, baseline_path, token)
+        self._preview_requested.emit(task_id, config_path, baseline_path, token, doip_missing_policy)
 
     def start_commit(self, task_id: str, session_id: str, output_path: str) -> None:
         token = self._start(task_id)

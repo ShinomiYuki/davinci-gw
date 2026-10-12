@@ -1,15 +1,19 @@
 # DaVinci 网关路由桌面工具使用说明
 
+## DoIP→CAN 前置选择
+
+标准表的 `DoIP_to_CAN` 页参与同一次预览。前置 CAN 诊断配置缺失时，窗口展示 Tester、逻辑地址、CANBus、请求、响应和缺少的引用。A 阻断整个本次生成，B 跳过缺失映射并重新预览，C 返回修改输入。未作选择时无法生成。选择只用于当前输入，文件路径或内容变化后重新判断。成功预览中的“跳过”统计和问题清单保留每条被跳过映射。
+
 ## 启动
 
-将 `davinci-gw-gui-1.1.5-win-x64.zip` 完整解压到本地目录，双击 `davinci-gw-gui.exe`。程序是免安装 Windows x64 桌面应用，不需要 Python、PATH 或网络连接。不要只从压缩包中单独拖出 EXE；同目录的 `_internal` 是运行所需文件。
+将 `davinci-gw-gui-1.2.0-win-x64.zip` 完整解压到本地目录，双击 `davinci-gw-gui.exe`。程序是免安装 Windows x64 桌面应用，不需要 Python、PATH 或网络连接。不要只从压缩包中单独拖出 EXE；同目录的 `_internal` 是运行所需文件。
 
 安装目录可以只读。窗口位置和最近浏览目录保存在当前 Windows 用户设置中，日志位于 `%LOCALAPPDATA%\DaVinciGW\logs\gui.log`；不会把配置表内容、ARXML 内容或完整问题列表写入日志。
 
 ## 四步工作流
 
 1. 选择或拖入标准配置表。文件必须是 `*_vX.x.xlsx`，并符合本项目输入契约。
-2. 选择或拖入完整基准 ARXML。文件必须包含 CanIf、Com、EcuC、PduR 必要模块。
+2. 选择或拖入基准 ARXML。文件必须包含 CanIf、EcuC、PduR；更新信号路由时还要求 Com。
 3. 点击“预览变更”。界面会显示文件大小、Schema、目标版本、模块状态、动态功能统计以及问题/保留决定。预览不写输出文件。
 4. 确认输出路径后点击“生成 ARXML”。输出必须是新的 `.arxml` 文件，不能与基准相同，也不能覆盖已有文件。
 

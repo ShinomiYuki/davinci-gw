@@ -1,6 +1,6 @@
 # DaVinci 网关路由工具
 
-本工具读取上游生成的标准网关路由配置表和旧版 DaVinci/MICROSAR 工程导出的完整 ARXML，一次处理直接报文、信号及 CAN 诊断路由的 `ADD`/`DELETE`，生成新版完整 ARXML。配置表和基准 ARXML 始终只读。
+本工具读取标准网关路由配置表和 DaVinci/MICROSAR 工程导出的 ARXML，处理直接报文、信号及 CAN 诊断路由的 `ADD`/`DELETE`，并按 `DoIP_to_CAN` 映射配置跨协议诊断路由，生成新版 ARXML。配置表和基准 ARXML 始终只读。
 
 ## 主仓库与公司镜像
 
@@ -11,7 +11,8 @@
 ## 可以做什么
 
 - 校验配置表版本、工作表、字段、重复和替换对。
-- 检查 ARXML 的 AUTOSAR Schema 以及 CanIf、Com、EcuC、PduR 四个必要模块。
+- 检查 ARXML 的 AUTOSAR Schema 以及 CanIf、EcuC、PduR；更新信号路由时还要求 Com。
+- 支持 DoIP→CAN 物理请求及响应、功能广播；复用完整既有引用和关联 CAN Queue。
 - 新增或安全删除直接 CAN 报文路由和 Com 信号路由。
 - 新增信号路由时，自动把实际参与 Mapping 的 Rx、Tx `Signal Access` 设置为 `ACCESS_NEEDED_BY_SWC_OR_COM`。
 - 根据目标 CAN 通道和基准 ARXML 的真实引用，自动维护直接报文目标腿与既有 PduR RoutingGroup 的成员引用。
@@ -38,11 +39,13 @@
 
 1.1.5 的 CAN 诊断新增会按目标 EcuC PDU 的完整引用查找关联 TP 路径。与既有 DoIP 路由引用同一目标 PDU 时复用其 Queue，保留队列参数；间接关联的路径和同批新增目标也共用队列。新建共享队列取关联路由所需的较大 Depth，包含 7DF 或功能寻址时为 5。关联组已有多个不同 Queue 时明确报错，不修改既有配置。
 
+1.2.0 读取七列 `DoIP_to_CAN` 映射快照，按 Tester 与 logicalAddress 汇总实际 CAN 目标。先在同一内存事务中应用明确要求的 CAN 诊断变更，再检查完整前置引用；DoIP 表本身不会补建缺失 CAN 端点。前置缺失时默认停止预览，用户明确选择阻断全部或跳过缺失映射后重新预览。已有 DoIP 请求、响应和 RoutingActivation 按真实引用复用；新增主要对象使用 `GWT_`，参数取对应业务的物理或功能基准样例，Queue 参数和 Buffer 引用保持原样。功能请求保留既有 Dcm/LIN 目标。详见 [1.2.0 变更说明](docs/发布说明_v1.2.0.md)。
+
 源信号“超时值”单独写入 Rx `ComRxDataTimeoutSubstitutionValue`，无需同时填写“超时时间”；不修改 Tx 替代值。新增普通 CanIf/EcuC 名称包含模块、报文名、CAN ID、完整通道与方向，已有名称通过引用复用。
 
 当前不支持直接报文 LIN 路由、多 ARXML 合并和 DaVinci GUI 自动操作。诊断参数与边界见 [1.1.0 发布说明](docs/发布说明_v1.1.0.md)，本次修复见 [1.1.4 发布说明](docs/发布说明_v1.1.4.md)。
 
-上游配置表 Skill 的维护源码位于 [skills/build-gateway-routing-config](skills/build-gateway-routing-config/SKILL.md)，以独立标签 `skill-v1.2.0` 发布。空白模板新增七列 `DoIP_to_CAN`，按原始需求中的 logicalAddress、实际 Tester 与 CAN 请求/响应汇总映射，支持按项目打点或明确行号选择范围。这是 DoIP→CAN 开发的前置输入；当前工具 1.1.4 不读取该页，也不生成 DoIP/SoAd 或跨协议 PduR。模板同时更新“需求描述”并删除三张旧说明页，详情见 [Skill 1.2.0 发布说明](docs/Skill发布说明_v1.2.0.md)。
+上游配置表 Skill 的维护源码位于 [skills/build-gateway-routing-config](skills/build-gateway-routing-config/SKILL.md)，以独立标签 `skill-v1.2.0` 发布。空白模板新增七列 `DoIP_to_CAN`，按原始需求中的 logicalAddress、实际 Tester 与 CAN 请求/响应汇总映射，支持按项目打点或明确行号选择范围。工具 1.2.0 执行该页的 DoIP/跨协议 PduR 配置，SoAd 与通信连接由基准提供。模板同时更新“需求描述”并删除三张旧说明页，详情见 [Skill 1.2.0 发布说明](docs/Skill发布说明_v1.2.0.md)。
 
 ## Windows 桌面版
 

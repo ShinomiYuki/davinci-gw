@@ -20,6 +20,10 @@ class DiagnosticConflict(ArxmlStructureError):
     """输入或基线不足以唯一确定诊断配置。"""
 
 
+class DiagnosticMissing(DiagnosticConflict):
+    """必要对象或引用不存在，与已有配置冲突明确区分。"""
+
+
 class DiagnosticSkipped(DiagnosticConflict):
     """通道导入引用缺失，与既有 DBC 缺失约定一致地跳过整行。"""
 
@@ -55,12 +59,16 @@ class DiagnosticRoutePlanner:
 
     def node(self, path, definition=None):
         nodes = self.index.find_by_path(path)
+        if not nodes:
+            raise DiagnosticMissing(f"引用目标不存在：{definition}，{path}。")
         if len(nodes) != 1 or (definition and definition_ref(nodes[0], self.ns) != definition):
             raise DiagnosticConflict(f"引用目标无法唯一解析为 {definition}：{path}。")
         return nodes[0]
 
     def one(self, values, detail):
         unique = set(values)
+        if not unique:
+            raise DiagnosticMissing(f"{detail}缺失，请补充必要对象或引用。")
         if len(unique) != 1:
             raise DiagnosticConflict(f"{detail}无法唯一确定，候选={sorted(unique)}。请明确输入或修复基线。")
         return next(iter(unique))
@@ -107,6 +115,20 @@ class DiagnosticRoutePlanner:
             if self.values(node)[0].get(key) != (value,):
                 raise DiagnosticConflict(f"已有 CanIf 属性冲突，保留基线：{self.path(node)} 的 {key} 应为 {value}。")
 
+    def check_npdu_references(self, bindings):
+        """关联当前底层 PDU 的重复容器或多值引用属于冲突，不能按缺失处理。"""
+        inspected = []
+        for owner, definition, reference, target in bindings:
+            children = self.children(owner, definition)
+            values = tuple(self.values(child)[1].get(reference, ()) for child in children)
+            inspected.append((owner, definition, target, children, values))
+        related = any(target in refs for _, _, target, _, values in inspected for refs in values)
+        if related:
+            for owner, definition, _, children, values in inspected:
+                if len(children) > 1 or any(len(refs) > 1 for refs in values):
+                    raise DiagnosticConflict(f"关联 CanTp {self.path(owner)} 的 {definition} 存在重复容器或多值引用。")
+        return related
+
     def locate(self, endpoint, request_side):
         if endpoint.response_id is None:
             return self.locate_functional(endpoint, request_side)
@@ -115,9 +137,12 @@ class DiagnosticRoutePlanner:
         rx_frames, tx_frames = self.frames(endpoint.channel, rx_id, True), self.frames(endpoint.channel, tx_id, False)
         if not rx_frames and not tx_frames:
             return None
-        if len(rx_frames) != 1 or len(tx_frames) != 1:
+        if len(rx_frames) > 1 or len(tx_frames) > 1:
             raise DiagnosticConflict(f"{endpoint.channel} 0x{rx_id:X}/0x{tx_id:X} 的 CanIf 端点不完整或歧义："
                                      f"{[self.path(n) for n in rx_frames + tx_frames]}。")
+        if not rx_frames or not tx_frames:
+            raise DiagnosticMissing(f"{endpoint.channel} 缺少 CanIf {'Rx' if not rx_frames else 'Tx'} 端点，"
+                                    f"接收=0x{rx_id:X}，发送=0x{tx_id:X}。")
         rx, tx = rx_frames[0], tx_frames[0]
         self.check_frame(rx, endpoint, True)
         self.check_frame(tx, endpoint, False)
@@ -127,6 +152,15 @@ class DiagnosticRoutePlanner:
         candidates = []
         for channel in self.index.find_by_definition_ref(d.CANTP_CHANNEL):
             rxs, txs = self.children(channel, d.CANTP_RX), self.children(channel, d.CANTP_TX)
+            binding_types = ((rxs, d.CANTP_RX_NPDU, "CanTpRxNPduRef", lower_rx),
+                             (rxs, d.CANTP_TX_FC, "CanTpTxFcNPduRef", lower_tx),
+                             (txs, d.CANTP_RX_FC, "CanTpRxFcNPduRef", lower_rx),
+                             (txs, d.CANTP_TX_NPDU, "CanTpTxNPduRef", lower_tx))
+            related = self.check_npdu_references(tuple(
+                (owner, definition, f"{definition}/{field}", target)
+                for owners, definition, field, target in binding_types for owner in owners))
+            if related and (len(rxs) > 1 or len(txs) > 1):
+                raise DiagnosticConflict(f"关联 CanTp Channel {self.path(channel)} 包含多个物理 N-SDU，无法唯一配对。")
             if len(rxs) != 1 or len(txs) != 1:
                 continue
             checks = ((rxs[0], d.CANTP_RX_NPDU, "CanTpRxNPduRef", lower_rx),
@@ -137,6 +171,8 @@ class DiagnosticRoutePlanner:
                    self.values(self.children(owner, definition)[0])[1].get(f"{definition}/{field}") == (target,)
                    for owner, definition, field, target in checks):
                 candidates.append((channel, rxs[0], txs[0]))
+        if not candidates:
+            raise DiagnosticMissing(f"底层 PDU {lower_rx} / {lower_tx} 缺少完整 CanTp Channel 引用。")
         if len(candidates) != 1:
             raise DiagnosticConflict(f"底层 PDU {lower_rx} / {lower_tx} 无法定位唯一完整 CanTp Channel；"
                                      f"候选={[self.path(c[0]) for c in candidates]}。")
@@ -177,8 +213,13 @@ class DiagnosticRoutePlanner:
         lower = self.ref(frame, d.CANIF_RX_PDU_REF if rx else d.CANIF_TX_PDU_REF)
         definition, npdu = (d.CANTP_RX, d.CANTP_RX_NPDU) if rx else (d.CANTP_TX, d.CANTP_TX_NPDU)
         reference = npdu + ("/CanTpRxNPduRef" if rx else "/CanTpTxNPduRef")
-        candidates = [n for n in self.index.find_by_definition_ref(definition)
-                      if any(self.values(c)[1].get(reference) == (lower,) for c in self.children(n, npdu))]
+        candidates = []
+        for sdu in self.index.find_by_definition_ref(definition):
+            self.check_npdu_references(((sdu, npdu, reference, lower),))
+            if any(self.values(c)[1].get(reference) == (lower,) for c in self.children(sdu, npdu)):
+                candidates.append(sdu)
+        if not candidates:
+            raise DiagnosticMissing(f"功能寻址底层 PDU {lower} 缺少 CanTp N-SDU 引用。")
         if len(candidates) != 1:
             raise DiagnosticConflict(f"功能寻址底层 PDU {lower} 没有唯一 CanTp N-SDU。")
         sdu = candidates[0]

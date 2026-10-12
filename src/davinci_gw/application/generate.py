@@ -45,6 +45,7 @@ class PreparedTransaction:
 def prepare_transaction(
     config_path: str | Path, baseline_path: str | Path,
     checkpoint: Callable[[str], None] | None = None,
+    doip_missing_policy: str | None = None,
 ) -> PreparedTransaction:
     """只读加载输入并在内存工作树完成 DELETE 投影和 ADD，不写任何文件。"""
     config = Path(config_path).expanduser().resolve()
@@ -71,7 +72,8 @@ def prepare_transaction(
     else:
         try:
             document = ArxmlDocument.load(baseline)
-            inspection = document.inspect()
+            require_com = workbook_data is None or bool(workbook_data.signal_routes)
+            inspection = document.inspect(require_com=require_com)
         except ArxmlStructureError as exc:
             issues.append(_generation_issue("ARXML_STRUCTURE_INVALID", str(exc), baseline))
         except (etree.XMLSyntaxError, OSError, ValueError) as exc:
@@ -83,7 +85,7 @@ def prepare_transaction(
         return PreparedTransaction(validation)
     check("before_plan")
     try:
-        plan = TransactionCoordinator(document, workbook_data).plan_and_apply()
+        plan = TransactionCoordinator(document, workbook_data, doip_missing_policy=doip_missing_policy).plan_and_apply()
     except ArxmlStructureError as exc:
         return PreparedTransaction(
             validation, document=document,
@@ -109,6 +111,7 @@ def generate_inputs(
     baseline_path: str | Path,
     output_path: str | Path,
     overwrite: bool = False,
+    doip_missing_policy: str | None = None,
 ) -> GenerationReport:
     """在可丢弃工作树上执行 DELETE→ADD 事务并生成新版完整 ARXML。"""
     baseline = Path(baseline_path).expanduser().resolve()
@@ -129,7 +132,7 @@ def generate_inputs(
         return GenerationReport(
             validation=ValidationReport(tuple(output_issues)), output_path=output,
         )
-    prepared = prepare_transaction(config_path, baseline_path)
+    prepared = prepare_transaction(config_path, baseline_path, doip_missing_policy=doip_missing_policy)
     plan = prepared.plan
     document = prepared.document
     if prepared.issues or plan is None or document is None or plan.errors:

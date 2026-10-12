@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.domain.models import MutationPlan, WorkbookData
 from davinci_gw.mutations import MutationHandlerRegistry
 
 from .add import AddCoordinator
 from .delete import DeleteCoordinator
+from .doip_route import DoIPRoutePlanner
 
 
 def _merge_plans(delete: MutationPlan, add: MutationPlan) -> MutationPlan:
@@ -68,11 +71,13 @@ class TransactionCoordinator:
         document: ArxmlDocument,
         workbook: WorkbookData,
         handler_registry: MutationHandlerRegistry | None = None,
+        doip_missing_policy: str | None = None,
     ) -> None:
         """可选注入处理器注册表，默认保持现有四模块行为。"""
         self.document = document
         self.workbook = workbook
         self.handler_registry = handler_registry
+        self.doip_missing_policy = doip_missing_policy
 
     def plan_and_apply(self) -> MutationPlan:
         """先形成 DELETE 投影，再在新索引上规划 ADD，最后应用新增。"""
@@ -94,4 +99,29 @@ class TransactionCoordinator:
         if combined.errors:
             return combined
         add_coordinator.apply(add_plan)
+        if self.workbook.doip_mappings:
+            # CAN 前置已在可丢弃树中完成，DoIP 只能读取此时的真实引用。
+            doip_coordinator = AddCoordinator(
+                self.document, self.workbook, self.document.build_index(), self.handler_registry,
+            )
+            doip_plan = DoIPRoutePlanner(
+                self.workbook, doip_coordinator.ecuc, doip_coordinator.canif,
+                doip_coordinator.pdur, doip_coordinator.routing_groups, self.doip_missing_policy,
+            ).plan()
+            issues = list(doip_plan.issues)
+            operations = doip_coordinator._deduplicate_operations(doip_plan.operations, issues)
+            uuids = ()
+            if not doip_plan.errors:
+                uuids = doip_coordinator._preflight_operations(operations, issues)
+            doip_plan = replace(doip_plan, operations=operations, issues=tuple(issues), expected_new_uuids=uuids)
+            combined = replace(
+                combined, operations=combined.operations + doip_plan.operations,
+                issues=combined.issues + doip_plan.issues,
+                expected_new_uuids=combined.expected_new_uuids + doip_plan.expected_new_uuids,
+                doip_added_count=doip_plan.doip_added_count,
+                doip_existing_count=doip_plan.doip_existing_count,
+                doip_skipped_count=doip_plan.doip_skipped_count,
+            )
+            if not combined.errors:
+                doip_coordinator.apply(doip_plan)
         return combined

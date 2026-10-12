@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
         advanced_layout = QGridLayout(self.advanced_panel)
         self.operation_label = QLabel("—")
         self.session_label = QLabel("—")
-        self.version_label = QLabel("1.1.5")
+        self.version_label = QLabel("1.2.0")
         self.open_log_button = QPushButton("打开日志目录")
         advanced_layout.addWidget(QLabel("操作 ID"), 0, 0)
         advanced_layout.addWidget(self.operation_label, 0, 1)
@@ -233,6 +233,7 @@ class MainWindow(QMainWindow):
         self.vm.issues_changed.connect(self.issue_model.set_issues)
         self.vm.preview_changed.connect(self._rebuild_summary)
         self.vm.shutdown_finished.connect(self._finish_close)
+        self.vm.doip_choice_required.connect(self._choose_doip_prerequisites)
         self.config_button.clicked.connect(lambda: self._browse_input("config"))
         self.baseline_button.clicked.connect(lambda: self._browse_input("baseline"))
         self.config_clear.clicked.connect(lambda: self.vm.set_config_path(""))
@@ -255,6 +256,21 @@ class MainWindow(QMainWindow):
         self.open_folder_button.clicked.connect(self._open_artifact_folder)
         self.copy_path_button.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.vm.artifact_path))
         self.open_log_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_path().parent))))
+
+    def _choose_doip_prerequisites(self) -> None:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("DoIP→CAN 前置缺失")
+        dialog.setText("选中映射缺少 CAN 诊断前置。请查看问题清单并选择本次处理方式。")
+        dialog.setDetailedText("\n".join(issue.message for issue in self.vm.issues if issue.code == "DOIP_PREREQUISITE_MISSING"))
+        block = dialog.addButton("A 阻断整个本次生成", QMessageBox.RejectRole)
+        skip = dialog.addButton("B 跳过前置缺失映射", QMessageBox.AcceptRole)
+        dialog.addButton("C 其他处理，返回修改输入", QMessageBox.ActionRole)
+        dialog.setDefaultButton(block)
+        dialog.exec()
+        if dialog.clickedButton() is skip:
+            self.vm.choose_doip_missing_policy("SKIP")
+        elif dialog.clickedButton() is block:
+            self.vm.choose_doip_missing_policy("BLOCK")
 
     def _browse_input(self, role: str) -> None:
         recent = str(self.settings.value(f"recent/{role}", ""))

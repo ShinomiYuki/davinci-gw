@@ -71,15 +71,15 @@ def build_server(service: GatewayMcpService | None = None) -> MCPServer[Any]:
 
     @server.tool(
         name="preview_gateway_update",
-        description="解析并预览网关变更，创建当前进程内一次性 preparation_id；不写输出文件。",
+        description="解析并预览网关变更。DoIP 前置缺失时须先展示清单并等待用户选择，再以 BLOCK 或 SKIP 重新预览。成功后创建一次性 preparation_id，不写输出。",
         annotations=ToolAnnotations(
             read_only_hint=True, destructive_hint=False, idempotent_hint=False, open_world_hint=False,
         ),
         structured_output=True,
     )
-    async def preview_gateway_update(config_path: str, baseline_path: str) -> GatewayToolResponse:
+    async def preview_gateway_update(config_path: str, baseline_path: str, doip_missing_policy: str | None = None) -> GatewayToolResponse:
         return GatewayToolResponse.model_validate(
-            await gateway.preview_gateway_update(config_path, baseline_path),
+            await gateway.preview_gateway_update(config_path, baseline_path, doip_missing_policy),
         )
 
     @server.tool(

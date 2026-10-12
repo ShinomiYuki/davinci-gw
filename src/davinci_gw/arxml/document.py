@@ -61,6 +61,7 @@ class ArxmlDocument:
         self.has_xml_declaration = has_xml_declaration
         self.standalone = standalone
         self.doctype = tree.docinfo.doctype or None
+        self.require_com = True
 
     @classmethod
     def load(cls, source_path: str | Path) -> "ArxmlDocument":
@@ -89,7 +90,7 @@ class ArxmlDocument:
             )
 
     def discover_modules(self) -> dict[str, ArxmlModuleInfo]:
-        """结合节点类型、SHORT-NAME 和 DEFINITION-REF 发现四个必要模块。"""
+        """按节点类型、名称和定义发现本次所需模块，信号更新需要 Com。"""
         candidates: dict[str, list[etree._Element]] = {name: [] for name in TARGET_MODULES}
         for node in self.root.iter():
             if not isinstance(node.tag, str) or local_name(node) != "ECUC-MODULE-CONFIGURATION-VALUES":
@@ -101,11 +102,13 @@ class ArxmlDocument:
         modules: dict[str, ArxmlModuleInfo] = {}
         for name, expected_ref in TARGET_MODULES.items():
             found = candidates[name]
+            if name == "Com" and not self.require_com and not found:
+                continue
             if not found:
                 raise ArxmlStructureError(
                     f"基准ARXML“{self.source_path}”中未找到{name}模块配置"
                     f"（期望DEFINITION-REF={expected_ref}）。"
-                    "请确认导出的ARXML包含CanIf、Com、EcuC、PduR四个模块后重试。"
+                    "请确认导出的ARXML包含本次更新所需模块后重试。"
                 )
             if len(found) > 1:
                 raise ArxmlStructureError(
@@ -122,8 +125,10 @@ class ArxmlDocument:
             )
         return modules
 
-    def inspect(self) -> ArxmlInspectionResult:
-        """检查根、Schema 和四个模块并返回结构化结果。"""
+    def inspect(self, *, require_com: bool | None = None) -> ArxmlInspectionResult:
+        """检查根、Schema 和本次所需模块并返回结构化结果。"""
+        if require_com is not None:
+            self.require_com = require_com
         self._validate_root()
         schema_location, schema_filename = schema_details(self.root, self.namespace)
         if not schema_location:
@@ -176,7 +181,7 @@ class ArxmlDocument:
                 stream.flush()
                 os.fsync(stream.fileno())
             temporary_document = ArxmlDocument.load(temp_path)
-            temporary_document.inspect()
+            temporary_document.inspect(require_com=self.require_com)
             if validator is not None:
                 validator(temporary_document)
             if before_replace is not None:

@@ -259,7 +259,7 @@ def build_container(
     if short_name is None:
         raise ArxmlStructureError(f"模板“{operation.definition_ref}”缺少SHORT-NAME。")
     short_name.text = operation.short_name
-    if operation.kind in {MutationKind.PDUR_ROUTING_PATH, MutationKind.COM_GW_MAPPING, MutationKind.CANTP_CONTAINER, MutationKind.PDUR_QUEUE}:
+    if operation.kind in {MutationKind.PDUR_ROUTING_PATH, MutationKind.COM_GW_MAPPING, MutationKind.CANTP_CONTAINER, MutationKind.PDUR_QUEUE, MutationKind.DOIP_CONTAINER}:
         subcontainers = node.find(qualified(namespace, "SUB-CONTAINERS"))
         if subcontainers is not None:
             for child in list(subcontainers):

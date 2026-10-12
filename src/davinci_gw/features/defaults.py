@@ -129,7 +129,7 @@ class SignalRoutingFeature:
 
 def default_feature_registry() -> FeatureRegistry:
     """为每个 Facade 创建独立默认注册表，避免全局测试污染。"""
-    return FeatureRegistry((DirectMessageFeature(), SignalRoutingFeature(), DiagnosticRoutingFeature()))
+    return FeatureRegistry((DirectMessageFeature(), SignalRoutingFeature(), DiagnosticRoutingFeature(), DoIPRoutingFeature()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,3 +154,26 @@ class DiagnosticRoutingFeature:
             f"{route.source.sheet_name} 第 {route.source.row_number} 行") for route in routes
             if plan and any(route.source in operation.source_locations for operation in plan.operations))
         return FeatureSummaryDto(self.feature_id, self.display_name, _status(context), metrics, details=details)
+
+
+@dataclass(frozen=True, slots=True)
+class DoIPRoutingFeature:
+    """向各入口展示映射统计和完整前置缺失清单。"""
+
+    feature_id: str = "doip_to_can"
+    display_name: str = "DoIP→CAN路由"
+    capabilities: tuple[str, ...] = ("MAPPING", "PHYSICAL", "FUNCTIONAL", "PREVIEW", "GENERATE", "PREREQUISITE_CHOICE")
+
+    def summarize(self, context: FeatureContext) -> FeatureSummaryDto:
+        routes = context.workbook.doip_mappings if context.workbook else ()
+        plan = context.plan
+        metrics = (MetricDto("requested", "输入映射", len(routes)),) + tuple(
+            MetricDto(key, label, getattr(plan, f"doip_{key}_count") if plan else 0)
+            for key, label in (("added", "新增或补全"), ("existing", "已有"), ("skipped", "跳过"))
+        )
+        details = tuple(ChangeDetailDto("MAPPING", "DoIP→CAN",
+            f"0x{r.tester:04X} · 0x{r.logical_address:04X} · {r.router_type}",
+            f"{r.can_bus} · 0x{r.request_id:X} / " + (f"0x{r.response_id:X}" if r.response_id is not None else "功能寻址"),
+            f"{r.source.sheet_name} 第 {r.source.row_number} 行") for r in routes)
+        issues = tuple(issue for issue in context.issues if issue.code.startswith("DOIP_"))
+        return FeatureSummaryDto(self.feature_id, self.display_name, _status(context), metrics, issues, details=details)

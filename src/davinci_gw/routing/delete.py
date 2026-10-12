@@ -245,7 +245,7 @@ class DeleteCoordinator:
             destination_module_ref=self.pdur.dest_module_ref,
             lock_ref=self.pdur.lock_ref,
         )
-        self.com = ComEditor(document, self.index)
+        self.com = ComEditor(document, self.index) if document.require_com or workbook.signal_routes else None
         self.references = {entry.channel_name: entry for entry in workbook.reference_data}
         self.direct_add_replacements = {
             route.key: route for route in workbook.direct_routes

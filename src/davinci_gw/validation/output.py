@@ -22,10 +22,15 @@ HANDLE_DEFINITIONS = (
     f"{defs.CANTP_TX_FC}/CanTpTxFcNPduConfirmationPduId",
     f"{defs.CANTP_RX_FC}/CanTpRxFcNPduId",
     f"{defs.CANTP_TX_NPDU}/CanTpTxNPduConfirmationPduId",
+    "/MICROSAR/DoIP/DoIPConfigSet/DoIPInterface/DoIPChannel/DoIPChannelId",
+    "/MICROSAR/DoIP/DoIPConfigSet/DoIPInterface/DoIPChannel/DoIPPduRRxPdu/DoIPPduRRxPduId",
+    "/MICROSAR/DoIP/DoIPConfigSet/DoIPInterface/DoIPChannel/DoIPPduRTxPdu/DoIPPduRTxPduId",
 )
 CANTP_SYMBOLIC_CONTAINERS = frozenset({
     defs.CANTP_RX, defs.CANTP_TX, defs.CANTP_RX_NPDU,
     defs.CANTP_TX_FC, defs.CANTP_RX_FC, defs.CANTP_TX_NPDU,
+    "/MICROSAR/DoIP/DoIPConfigSet/DoIPInterface/DoIPChannel/DoIPPduRRxPdu",
+    "/MICROSAR/DoIP/DoIPConfigSet/DoIPInterface/DoIPChannel/DoIPPduRTxPdu",
 })
 
 
@@ -45,6 +50,16 @@ def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> No
         if operation.action is MutationAction.ADD_REFERENCE
     }
     for operation in plan.operations:
+        if operation.kind is MutationKind.DOIP_REFERENCE:
+            found = index.find_by_path(operation.parent_path)
+            if len(found) != 1:
+                failures.append(f"RoutingActivation 无法唯一解析：{operation.parent_path}")
+                continue
+            refs = semantic_values(found[0], document.namespace)[1]
+            for definition, target in operation.references:
+                if refs.get(definition, ()).count(target) != 1 or len(index.find_by_path(target)) != 1:
+                    failures.append(f"RoutingActivation 目标引用无法唯一解析：{target}")
+            continue
         if operation.action in {MutationAction.ADD_REFERENCE, MutationAction.REMOVE_REFERENCE}:
             target = operation.reference(defs.PDUR_ROUTING_GROUP_DEST_REF)
             if target is None:
@@ -157,7 +172,8 @@ def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> No
             named = [node for node in index.find_by_short_name(operation.short_name)
                      if definition_ref(node, document.namespace) == operation.definition_ref]
             if len(named) != 1:
-                failures.append(f"本次新增 CanTp 符号名“{operation.short_name}”"
+                module = "CanTp" if operation.definition_ref.startswith("/MICROSAR/CanTp/") else "DoIP"
+                failures.append(f"本次新增 {module} 符号名“{operation.short_name}”"
                                 f"在定义“{operation.definition_ref}”下出现{len(named)}次，必须唯一")
     planned_handles: Counter[tuple[str, str]] = Counter()
     for operation in plan.operations:

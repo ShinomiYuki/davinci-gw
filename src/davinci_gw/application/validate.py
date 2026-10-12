@@ -17,9 +17,9 @@ from davinci_gw.domain.models import (
 from davinci_gw.input.workbook_reader import read_workbook
 
 
-def inspect_baseline(baseline_path: str | Path) -> ArxmlInspectionResult:
+def inspect_baseline(baseline_path: str | Path, *, require_com: bool = True) -> ArxmlInspectionResult:
     """安全加载基准 ARXML 并检查命名空间、Schema 和四个目标模块。"""
-    return ArxmlDocument.load(baseline_path).inspect()
+    return ArxmlDocument.load(baseline_path).inspect(require_com=require_com)
 
 
 def write_roundtrip_copy(
@@ -72,7 +72,8 @@ def validate_inputs(config_path: str | Path, baseline_path: str | Path) -> Valid
         issues.append(_missing_file(baseline, "基准ARXML"))
     else:
         try:
-            inspection = inspect_baseline(baseline)
+            require_com = workbook_data is None or bool(workbook_data.signal_routes)
+            inspection = inspect_baseline(baseline, require_com=require_com)
         except ArxmlStructureError as exc:
             issues.append(ValidationIssue(
                 code="ARXML_STRUCTURE_INVALID", message=str(exc), file_path=baseline,

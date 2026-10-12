@@ -9,9 +9,9 @@ from davinci_gw.domain.models import OperationType, PreviewReport, ValidationRep
 from .generate import prepare_transaction
 
 
-def preview_inputs(config_path: str | Path, baseline_path: str | Path) -> PreviewReport:
+def preview_inputs(config_path: str | Path, baseline_path: str | Path, doip_missing_policy: str | None = None) -> PreviewReport:
     """在内存投影上完成 DELETE/ADD 规划并展示真实状态，不执行文件写入。"""
-    prepared = prepare_transaction(config_path, baseline_path)
+    prepared = prepare_transaction(config_path, baseline_path, doip_missing_policy=doip_missing_policy)
     plan_issues = prepared.plan.issues if prepared.plan else ()
     validation = ValidationReport(
         prepared.validation.issues + plan_issues + prepared.issues,

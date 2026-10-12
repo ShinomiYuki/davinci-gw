@@ -49,6 +49,11 @@ def _route_messages(workbook: WorkbookData | None) -> dict[tuple[str | None, int
             MessageIdentityDto("SOURCE", route.request_name, f"0x{endpoint.request_id:X}"),
         ) + ((MessageIdentityDto("TARGET", route.response_name, f"0x{endpoint.response_id:X}"),)
              if endpoint.response_id is not None else ())
+    for route in workbook.doip_mappings:
+        result[(route.source.sheet_name, route.source.row_number)] = (
+            MessageIdentityDto("SOURCE", f"{route.router_type} 0x{route.logical_address:04X}", f"0x{route.request_id:X}"),
+        ) + ((MessageIdentityDto("TARGET", route.can_bus, f"0x{route.response_id:X}"),)
+             if route.response_id is not None else ())
     return result
 
 

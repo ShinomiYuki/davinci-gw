@@ -31,6 +31,7 @@ from .direct_route import DirectRoutePlanner
 from .routing_group_membership import RoutingGroupMembershipService
 from .signal_route import SignalRoutePlanner
 from .diagnostic_route import DiagnosticRoutePlanner
+from .doip_route import DoIPRoutePlanner
 
 HANDLE_DEFINITIONS = frozenset({
     defs.CANIF_RX_HANDLE, defs.CANIF_TX_HANDLE, defs.PDUR_SRC_HANDLE, defs.PDUR_DEST_HANDLE,
@@ -62,8 +63,17 @@ class AddCoordinator:
         self.routing_groups = RoutingGroupMembershipService(
             document, self.index, reference_data=workbook.reference_data,
         )
-        self.com = ComEditor(document, self.index)
+        self.com = ComEditor(document, self.index) if document.require_com or workbook.signal_routes else None
+        com_handlers = (
+            MutationHandler("com_mapping", frozenset({MutationKind.COM_GW_MAPPING}), 70, self.com.apply),
+            MutationHandler("com_source", frozenset({MutationKind.COM_GW_SOURCE}), 80, self.com.apply),
+            MutationHandler("com_destination", frozenset({MutationKind.COM_GW_DESTINATION}), 90, self.com.apply),
+            MutationHandler("com_signal_access", frozenset({MutationKind.COM_SIGNAL_ACCESS}), 95, self.com.apply),
+            MutationHandler("com_timeout", frozenset({MutationKind.COM_SIGNAL_TIMEOUT}), 100, self.com.apply),
+        ) if self.com else ()
         self.handlers = handler_registry or MutationHandlerRegistry((
+            MutationHandler("doip", frozenset({MutationKind.DOIP_CONTAINER}), 36, DoIPRoutePlanner.apply),
+            MutationHandler("doip_reference", frozenset({MutationKind.DOIP_REFERENCE}), 66, DoIPRoutePlanner.apply),
             MutationHandler("ecuc", frozenset({MutationKind.ECUC_PDU}), 10, self.ecuc.apply),
             MutationHandler("canif_rx", frozenset({MutationKind.CANIF_RX_PDU}), 20, self.canif.apply),
             MutationHandler("canif_tx", frozenset({MutationKind.CANIF_TX_PDU}), 30, self.canif.apply),
@@ -78,18 +88,7 @@ class AddCoordinator:
                 65,
                 self.routing_groups.apply_add,
             ),
-            MutationHandler("com_mapping", frozenset({MutationKind.COM_GW_MAPPING}), 70, self.com.apply),
-            MutationHandler("com_source", frozenset({MutationKind.COM_GW_SOURCE}), 80, self.com.apply),
-            MutationHandler(
-                "com_destination", frozenset({MutationKind.COM_GW_DESTINATION}), 90, self.com.apply,
-            ),
-            MutationHandler(
-                "com_signal_access", frozenset({MutationKind.COM_SIGNAL_ACCESS}), 95, self.com.apply,
-            ),
-            MutationHandler(
-                "com_timeout", frozenset({MutationKind.COM_SIGNAL_TIMEOUT}), 100, self.com.apply,
-            ),
-        ))
+        ) + com_handlers)
 
     def _deduplicate_operations(
         self, operations: tuple[MutationOperation, ...], issues: list[ValidationIssue],

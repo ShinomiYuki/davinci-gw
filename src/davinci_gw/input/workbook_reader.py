@@ -323,6 +323,7 @@ def _read_signals(
 def read_workbook(config_path: str | Path) -> WorkbookReadResult:
     """读取三张执行输入页并返回规范化数据和全部可定位契约问题。"""
     from .diagnostic_reader import read_diagnostics
+    from .doip_reader import DOIP_HEADERS, DOIP_SHEET, read_doip_mappings
     from .workbook_schema import DIAGNOSTIC_HEADERS, DIAGNOSTIC_SHEET
 
     path = Path(config_path).expanduser().resolve()
@@ -359,6 +360,12 @@ def read_workbook(config_path: str | Path) -> WorkbookReadResult:
             signals = _read_signals(workbook[SIGNAL_SHEET], mappings[SIGNAL_SHEET], path, issues) if SIGNAL_SHEET in mappings else []
             diagnostics = []
             functional_ids = []
+            doip_mappings = []
+            if DOIP_SHEET in workbook.sheetnames:
+                sheet = workbook[DOIP_SHEET]
+                mapping = _header_map(sheet, DOIP_HEADERS, path, issues)
+                if mapping is not None:
+                    doip_mappings = read_doip_mappings(sheet, mapping, path, issues, references)
             if DIAGNOSTIC_SHEET in workbook.sheetnames:
                 sheet = workbook[DIAGNOSTIC_SHEET]
                 headers = {_clean_string(value) for value in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))}
@@ -390,5 +397,5 @@ def read_workbook(config_path: str | Path) -> WorkbookReadResult:
                             functional_ids.append(parsed)
         finally:
             workbook.close()
-    data = WorkbookData(path, version, tuple(references), tuple(direct), tuple(signals), tuple(diagnostics), tuple(functional_ids))
+    data = WorkbookData(path, version, tuple(references), tuple(direct), tuple(signals), tuple(diagnostics), tuple(functional_ids), tuple(doip_mappings))
     return WorkbookReadResult(data, tuple(issues))

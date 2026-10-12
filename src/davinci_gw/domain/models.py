@@ -38,6 +38,8 @@ class MutationKind(str, Enum):
 
     ECUC_PDU = "ECUC_PDU"
     CANTP_CONTAINER = "CANTP_CONTAINER"
+    DOIP_CONTAINER = "DOIP_CONTAINER"
+    DOIP_REFERENCE = "DOIP_REFERENCE"
     PDUR_QUEUE = "PDUR_QUEUE"
     CANIF_RX_PDU = "CANIF_RX_PDU"
     CANIF_TX_PDU = "CANIF_TX_PDU"
@@ -149,6 +151,20 @@ class DiagnosticRouteChange:
 
 
 @dataclass(frozen=True, slots=True)
+class DoIPMapping:
+    """一个 Tester、逻辑地址与 CAN 端点的选定映射。"""
+
+    tester: int
+    logical_address: int
+    router_type: str
+    can_bus: str
+    request_id: int
+    response_id: int | None
+    functional: bool
+    source: SourceLocation
+
+
+@dataclass(frozen=True, slots=True)
 class WorkbookData:
     """标准工作簿规范化后的全部执行数据。"""
 
@@ -159,6 +175,7 @@ class WorkbookData:
     signal_routes: tuple[SignalRouteChange, ...] = ()
     diagnostic_routes: tuple[DiagnosticRouteChange, ...] = ()
     diagnostic_functional_ids: tuple[int, ...] = ()
+    doip_mappings: tuple[DoIPMapping, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,6 +338,9 @@ class MutationPlan:
     diagnostic_deleted_count: int = 0
     diagnostic_missing_count: int = 0
     diagnostic_skipped_count: int = 0
+    doip_added_count: int = 0
+    doip_existing_count: int = 0
+    doip_skipped_count: int = 0
 
     @property
     def errors(self) -> tuple[ValidationIssue, ...]:

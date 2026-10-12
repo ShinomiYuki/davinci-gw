@@ -78,8 +78,11 @@ class UpdateRequestDto(SerializableDto):
     baseline_path: str
     output_path: str | None = None
     overwrite: bool = False
+    doip_missing_policy: str | None = None
 
     def __post_init__(self) -> None:
+        if self.doip_missing_policy not in {None, "BLOCK", "SKIP"}:
+            raise ValueError("DoIP 前置缺失策略仅允许 BLOCK、SKIP 或未选择。")
         object.__setattr__(self, "config_path", str(self.config_path))
         object.__setattr__(self, "baseline_path", str(self.baseline_path))
         if self.output_path is not None:

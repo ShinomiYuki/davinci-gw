@@ -128,13 +128,17 @@ class GatewayMcpService:
             LOGGER.error("validate adapter failure error_type=%s", type(exc).__name__)
             return self._adapter_failure(tool)
 
-    async def preview_gateway_update(self, config_path: str, baseline_path: str) -> dict[str, object]:
+    async def preview_gateway_update(self, config_path: str, baseline_path: str, doip_missing_policy: str | None = None) -> dict[str, object]:
         """预览并建立一次性 Prepared Session；不写输出文件。"""
         tool = "preview_gateway_update"
+        if doip_missing_policy not in {None, "BLOCK", "SKIP"}:
+            return envelope(tool, status=OperationStatus.VALIDATION_FAILED.value, operation_id=str(uuid4()),
+                            summary="前置缺失策略无效。",
+                            issues=[issue("DOIP_POLICY_INVALID", "仅允许 BLOCK、SKIP 或不指定策略。")])
         try:
             config = validate_input_file(config_path, "config_path", ".xlsx")
             baseline = validate_input_file(baseline_path, "baseline_path", ".arxml")
-            request = UpdateRequestDto(config, baseline)
+            request = UpdateRequestDto(config, baseline, doip_missing_policy=doip_missing_policy)
             prepared = await self.runtime.run(
                 lambda token: self.facade.preview(request, observer=self._observer, cancellation=token),
             )
@@ -148,6 +152,8 @@ class GatewayMcpService:
                 "features": [item.to_dict() for item in preview.features] if preview else [],
                 "input_files": [item.to_dict() for item in preview.input_files] if preview else [],
                 "target_version": preview.target_version if preview else None,
+                "doip_missing_policy": doip_missing_policy,
+                "requires_doip_prerequisite_choice": any(item.code == "DOIP_PREREQUISITE_CHOICE_REQUIRED" for item in public_issues),
             }
             if prepared.status is OperationStatus.SUCCESS and prepared.session_id:
                 with self._lock:

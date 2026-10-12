@@ -37,11 +37,14 @@ def _parser() -> argparse.ArgumentParser:
         child = subparsers.add_parser(command, help=help_text)
         child.add_argument("--config", type=Path, required=True, help="标准配置表路径")
         child.add_argument("--baseline", type=Path, required=True, help="旧版完整 ARXML 路径")
+        if command == "preview":
+            child.add_argument("--doip-missing-policy", choices=("BLOCK", "SKIP"), help="用户明确选择的 DoIP 前置缺失处理方式")
     generate = subparsers.add_parser("generate", help="应用DELETE与ADD事务并原子写出新版完整ARXML")
     generate.add_argument("--config", type=Path, required=True, help="标准配置表路径")
     generate.add_argument("--baseline", type=Path, required=True, help="旧版完整ARXML路径")
     generate.add_argument("--output", type=Path, required=True, help="新版完整ARXML输出路径")
     generate.add_argument("--overwrite", action="store_true", help="显式允许覆盖已有输出；永不覆盖基线")
+    generate.add_argument("--doip-missing-policy", choices=("BLOCK", "SKIP"), help="用户明确选择的 DoIP 前置缺失处理方式")
     return parser
 
 
@@ -76,7 +79,7 @@ def _render_validate(report: ValidationReport) -> None:
             print(f"目标版本：{report.workbook_data.target_version}")
         if report.arxml_inspection:
             print(f"AUTOSAR Schema：{report.arxml_inspection.schema_filename}")
-            print("必要模块：CanIf、Com、EcuC、PduR 均已找到。")
+            print("已找到模块：" + "、".join(report.arxml_inspection.modules))
         print("validate 仅校验输入，不执行路由写入。")
     print(f"摘要：错误 {len(report.errors)}，警告 {len(report.warnings)}。")
 
@@ -108,6 +111,10 @@ def _render_preview(preview: PreviewReport) -> None:
     print(f"  跳过：{plan.signal_skipped_count if plan else 0}")
     print(f"  冲突：{plan.signal_conflict_count if plan else 0}\n")
     print("引用数据：")
+    if plan:
+        print(f"DoIP→CAN：新增或补全 {plan.doip_added_count}，已有 {plan.doip_existing_count}，跳过 {plan.doip_skipped_count}")
+    for issue in preview.validation.warnings:
+        print(f"警告：{issue.message}")
     print(f"  CAN通道：{preview.reference_count}\n")
     print("基准ARXML：")
     print(f"  AUTOSAR Schema：{inspection.schema_filename if inspection else '未识别'}")
@@ -148,6 +155,7 @@ def _render_generation(report: GenerationReport) -> None:
     print(f"  保留超时：{plan.signal_timeout_retained_count}")
     print(f"  清除超时：{plan.signal_timeout_removed_count}")
     print(f"  缺失或不支持并跳过：{plan.signal_skipped_count}\n")
+    print(f"DoIP→CAN：新增或补全 {plan.doip_added_count}，已有 {plan.doip_existing_count}，跳过 {plan.doip_skipped_count}\n")
     if plan.decisions:
         print("保留决策：")
         for decision in plan.decisions:
@@ -171,6 +179,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "generate":
             report = generate_inputs(
                 args.config, args.baseline, args.output, overwrite=args.overwrite,
+                doip_missing_policy=args.doip_missing_policy,
             )
             _render_generation(report)
             if args.debug:
@@ -182,7 +191,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if any(issue.category is ValidationCategory.SYSTEM for issue in report.errors):
                 return EXIT_SYSTEM_ERROR
             return EXIT_CONTRACT_ERROR
-        preview = preview_inputs(args.config, args.baseline)
+        preview = preview_inputs(args.config, args.baseline, doip_missing_policy=args.doip_missing_policy)
         _render_preview(preview)
         if args.debug:
             _render_debug_causes(preview.validation)

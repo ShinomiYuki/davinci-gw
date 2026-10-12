@@ -134,7 +134,8 @@ class GatewayFacade:
             if config_path.is_file() and baseline_path.is_file():
                 initial_config = fingerprint_file(config_path)
                 initial_baseline = fingerprint_file(baseline_path)
-            prepared = prepare_transaction(config_path, baseline_path, checkpoint=checkpoint)
+            prepared = prepare_transaction(config_path, baseline_path, checkpoint=checkpoint,
+                                           doip_missing_policy=request.doip_missing_policy)
             plan_issues = prepared.plan.issues if prepared.plan else ()
             decisions = prepared.plan.decisions if prepared.plan else ()
             workbook = prepared.validation.workbook_data
@@ -152,6 +153,8 @@ class GatewayFacade:
             if blocking or prepared.plan is None or prepared.document is None:
                 preview = PreviewResultDto(
                     operation_id, OperationStatus.VALIDATION_FAILED, summaries, public_issues,
+                    input_files=(InputFileDto("CONFIG", str(config_path), initial_config),
+                                 InputFileDto("BASELINE", str(baseline_path), initial_baseline)),
                     target_version=workbook.target_version if workbook else None,
                     checks=checks,
                 )
@@ -178,6 +181,7 @@ class GatewayFacade:
             )
             normalized_request = UpdateRequestDto(
                 str(config_path), str(baseline_path), request.output_path, request.overwrite,
+                request.doip_missing_policy,
             )
             record = self.sessions.create(
                 normalized_request, final_config, final_baseline, prepared, preview,

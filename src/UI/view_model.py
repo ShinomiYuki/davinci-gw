@@ -34,6 +34,7 @@ class GatewayViewModel(QObject):
     issues_changed = Signal(object)
     preview_changed = Signal()
     shutdown_finished = Signal()
+    doip_choice_required = Signal()
 
     def __init__(self, runner: QtTaskRunner, parent=None) -> None:
         super().__init__(parent)
@@ -45,6 +46,8 @@ class GatewayViewModel(QObject):
         self.output_error = ""
         self.output_manually_edited = False
         self.session_id: str | None = None
+        self.doip_missing_policy: str | None = None
+        self._doip_choice_inputs: tuple[InputFileDto, ...] = ()
         self.operation_id = ""
         self.target_version: str | None = None
         self.features: tuple[FeatureSummaryDto, ...] = ()
@@ -95,6 +98,7 @@ class GatewayViewModel(QObject):
             return
         old_session = self.session_id
         setattr(self, attribute, normalized)
+        self.doip_missing_policy = None
         self._clear_preview()
         if old_session:
             self.runner.discard(old_session)
@@ -129,6 +133,19 @@ class GatewayViewModel(QObject):
     def start_preview(self) -> None:
         if not self.controls.preview_enabled:
             return
+        if self.doip_missing_policy is not None:
+            for item in self._doip_choice_inputs:
+                try:
+                    current = Path(item.path).stat()
+                    unchanged = item.fingerprint is not None and (
+                        current.st_size, current.st_mtime_ns
+                    ) == (item.fingerprint.size, item.fingerprint.modified_ns)
+                except OSError:
+                    unchanged = False
+                if not unchanged:
+                    self.doip_missing_policy = None
+                    self._doip_choice_inputs = ()
+                    break
         old_session = self.session_id
         self._clear_preview()
         if old_session:
@@ -141,8 +158,19 @@ class GatewayViewModel(QObject):
         task_id = str(uuid4())
         self._operation_started_at = monotonic()
         LOGGER.info("开始预览 task=%s", task_id)
-        self.runner.start_preview(task_id, self.config_path, self.baseline_path)
+        if self.doip_missing_policy is None:
+            self.runner.start_preview(task_id, self.config_path, self.baseline_path)
+        else:
+            self.runner.start_preview(task_id, self.config_path, self.baseline_path, self.doip_missing_policy)
         self.changed.emit()
+
+    def choose_doip_missing_policy(self, policy: str) -> None:
+        """选择仅用于当前输入，重新预览后才允许生成。"""
+        if policy not in {"BLOCK", "SKIP"}:
+            raise ValueError("请选择阻断全部或跳过前置缺失项。")
+        self.doip_missing_policy = policy
+        self._doip_choice_inputs = self.input_files
+        self.start_preview()
 
     def start_generate(self) -> None:
         if not self.controls.generate_enabled or not self.session_id:
@@ -222,6 +250,8 @@ class GatewayViewModel(QObject):
         self.issues_changed.emit(self.issues)
         self.preview_changed.emit()
         self.changed.emit()
+        if any(issue.code == "DOIP_PREREQUISITE_CHOICE_REQUIRED" for issue in self.issues):
+            self.doip_choice_required.emit()
 
     @Slot(object)
     def _on_generation_finished(self, result: GenerationResultDto) -> None:

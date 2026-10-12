@@ -6,6 +6,10 @@
 
 安装和运行均不需要管理员权限。项目采用 MIT License；发布 ZIP 包含 EXE、完整 `_internal`、全目录 SHA-256、安装/卸载脚本、示例配置、版本和 MIT 许可证。不能只复制 EXE。
 
+## DoIP→CAN 输入与选择
+
+服务 1.2.0 支持标准表的 `DoIP_to_CAN`。预览返回 `requires_doip_prerequisite_choice=true` 时，须展示缺失清单并等待用户选择，然后使用 `doip_missing_policy="BLOCK"` 或 `"SKIP"` 重新调用 `preview_gateway_update`。不指定策略不会自行跳过。成功预览将策略固定到 preparation_id 对应会话，`generate_gateway_arxml` 提交该会话；输入变化后必须重新预览并确认。其他处理方式先修改标准输入或基准，不使用任意字符串替代策略。
+
 ## 安装
 
 首次接入 Codex 或 DSH Desktop，优先使用 [AI 安装与接入](AI安装与接入.md) 中的 `setup.ps1`。它会自动完成下载、安装、客户端配置和 MCP 检查；源码根目录的 `AGENTS.md` 是 AI 的直接入口。
