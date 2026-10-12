@@ -36,6 +36,8 @@
 
 1.1.4 修复诊断目标 PDU 符号名冲突，并让同一 TP 路径的多个目标复用 Queue；共享 Queue 校验仅应用于 TRANSPORT_PROTOCOL 路径，普通整帧转发不再被误拦截。
 
+1.1.5 的 CAN 诊断新增会按目标 EcuC PDU 的完整引用查找关联 TP 路径。与既有 DoIP 路由引用同一目标 PDU 时复用其 Queue，保留队列参数；间接关联的路径和同批新增目标也共用队列。新建共享队列取关联路由所需的较大 Depth，包含 7DF 或功能寻址时为 5。关联组已有多个不同 Queue 时明确报错，不修改既有配置。
+
 源信号“超时值”单独写入 Rx `ComRxDataTimeoutSubstitutionValue`，无需同时填写“超时时间”；不修改 Tx 替代值。新增普通 CanIf/EcuC 名称包含模块、报文名、CAN ID、完整通道与方向，已有名称通过引用复用。
 
 当前不支持直接报文 LIN 路由、多 ARXML 合并和 DaVinci GUI 自动操作。诊断参数与边界见 [1.1.0 发布说明](docs/发布说明_v1.1.0.md)，本次修复见 [1.1.4 发布说明](docs/发布说明_v1.1.4.md)。
@@ -113,6 +115,8 @@ CAN 通道识别唯一应用路由组。找不到、存在歧义或只有 CanTp/
 工具不读取原始 Communication Routing Table，不解析 History，也不从自然语言推导需求。默认不覆盖已有输出；只有显式使用 `--overwrite` 才允许替换指定输出，但永远禁止把输出指向基准 ARXML。
 
 ## 安装
+
+首次接入时，在 Codex 或 DSH Desktop 打开本仓库并告诉 AI“安装这个工程并接入当前客户端”。AI 会从根目录 [AGENTS.md](AGENTS.md) 读取流程。也可在 PowerShell 7 中直接执行 `./scripts/setup.ps1 -Client DeepSeekHarness` 或 `-Client Codex`，自动下载对应版本的免 Python MCP 包、安装并配置客户端。使用本地包、源码模式和卸载见 [AI 安装与接入](docs/AI安装与接入.md)。
 
 在 Python 3.12 环境中进入工程目录：
 

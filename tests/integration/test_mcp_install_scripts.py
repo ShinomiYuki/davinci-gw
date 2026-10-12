@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import shutil
 import subprocess
+import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -186,3 +188,118 @@ def test_new_version_installs_beside_running_old_version_and_switches_config(tmp
     )
     assert not (install_root / "versions" / "1.0.0").exists()
     assert not (install_root / "versions" / "1.0.1").exists()
+
+
+@pytest.mark.parametrize("original", ["[]\n", "# retained comment\n[]\n",
+                         "- id: unrelated-plugin\n  disabled: true\n",
+                         "- id: unrelated-plugin\n  config:\n    text: |+\n      keep\n\n\n"])
+def test_dsh_install_preserves_patch_and_repeated_install_is_idempotent(tmp_path: Path, original: str) -> None:
+    project = Path(__file__).resolve().parents[2]
+    package = _package(tmp_path)
+    dsh_home = tmp_path / "dsh-home"
+    dsh_home.mkdir()
+    config = dsh_home / "cordis.patch.yml"
+    config.write_text(original, encoding="utf-8")
+    install_root = tmp_path / "installed"
+    args = ("-PackageRoot", str(package), "-InstallRoot", str(install_root),
+            "-Client", "DeepSeekHarness", "-DshHome", str(dsh_home))
+    script = project / "scripts" / "install_mcp.ps1"
+    _run(script, *args)
+    first = config.read_text(encoding="utf-8")
+    assert "name: mcp-client" in first and "serverName: davinci_gateway" in first
+    assert "toolCallTimeoutMs: 3600000" in first
+    if original.startswith('-'):
+        assert first.startswith(original)
+    elif original.startswith('#'):
+        assert original.splitlines()[0] in first
+    _run(script, *args)
+    assert config.read_text(encoding="utf-8") == first
+    assert len(list(dsh_home.glob("cordis.patch.yml.*.bak"))) == 1
+    _run(project / "scripts" / "uninstall_mcp.ps1", "-InstallRoot", str(install_root),
+         "-Client", "DeepSeekHarness", "-DshHome", str(dsh_home))
+    final = config.read_text(encoding="utf-8")
+    assert "davinci_gateway" not in final
+    if original.startswith('-'):
+        assert final == original
+    elif original.startswith('#'):
+        assert original.splitlines()[0] in final
+    assert not (install_root / "versions" / "1.0.0").exists()
+
+
+def test_dsh_unmanaged_server_blocks_install_before_copy(tmp_path: Path) -> None:
+    project = Path(__file__).resolve().parents[2]
+    package = _package(tmp_path)
+    home = tmp_path / "dsh"
+    home.mkdir()
+    original = '- insert:\n    - name: mcp-client\n      config:\n        serverName: davinci_gateway\n'
+    (home / "cordis.patch.yml").write_text(original, encoding="utf-8")
+    install_root = tmp_path / "installed"
+    result = _run(project / "scripts" / "install_mcp.ps1", "-PackageRoot", str(package),
+                  "-InstallRoot", str(install_root), "-Client", "DeepSeekHarness",
+                  "-DshHome", str(home), check=False)
+    assert result.returncode != 0
+    assert not install_root.exists()
+    assert (home / "cordis.patch.yml").read_text(encoding="utf-8") == original
+
+
+def test_setup_check_does_not_install_or_write_config(tmp_path: Path) -> None:
+    project = Path(__file__).resolve().parents[2]
+    install_root, home = tmp_path / "installed", tmp_path / "dsh"
+    result = _run(project / "scripts" / "setup.ps1", "-Client", "DeepSeekHarness",
+                  "-DshHome", str(home), "-InstallRoot", str(install_root), "-Check")
+    planned = json.loads(result.stdout)
+    assert planned["Client"] == "DeepSeekHarness"
+    assert planned["ConfigPath"] == str(home / "cordis.patch.yml")
+    assert not install_root.exists() and not home.exists()
+
+
+def test_source_client_config_preserves_python_arguments(tmp_path: Path) -> None:
+    project = Path(__file__).resolve().parents[2]
+    command = tmp_path / "Python with spaces" / "python.exe"
+    command.parent.mkdir()
+    command.write_bytes(b"placeholder")
+    home = tmp_path / "codex"
+    expression = (
+        f"& '{project / 'scripts' / 'configure_mcp_client.ps1'}' -Client Codex "
+        f"-Command '{command}' -Arguments @('-m','davinci_gw.mcp') -CodexHome '{home}'"
+    )
+    subprocess.run([_powershell(), "-NoProfile", "-NonInteractive", "-Command", expression],
+                   check=True, capture_output=True, timeout=30)
+    config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    server = config["mcp_servers"]["davinci_gateway"]
+    assert server["command"] == str(command)
+    assert server["args"] == ["-m", "davinci_gw.mcp"]
+
+
+def test_setup_rejects_unlaunchable_package_before_client_configuration(tmp_path: Path) -> None:
+    project = Path(__file__).resolve().parents[2]
+    version = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    package = _package(tmp_path, version=version)
+    install_root, home = tmp_path / "installed", tmp_path / "dsh"
+    result = _run(project / "scripts" / "setup.ps1", "-Client", "DeepSeekHarness",
+                  "-DshHome", str(home), "-InstallRoot", str(install_root),
+                  "-PackageRoot", str(package), check=False)
+    assert result.returncode != 0
+    assert not install_root.exists() and not home.exists()
+
+
+def test_packaged_setup_beneath_source_root_uses_its_own_version_and_runtime(tmp_path: Path) -> None:
+    project = Path(__file__).resolve().parents[2]
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "9.9.9"\n', encoding="utf-8")
+    package = _package(tmp_path)
+    shutil.copyfile(project / "scripts" / "setup.ps1", package / "setup.ps1")
+    result = _run(package / "setup.ps1", "-Client", "None", "-Check")
+    planned = json.loads(result.stdout)
+    assert planned["Version"] == "1.0.0"
+    assert planned["PackageRoot"] == str(package)
+    assert not planned["DownloadRequired"]
+
+
+def test_setup_resolves_relative_package_from_powershell_location(tmp_path: Path) -> None:
+    project = Path(__file__).resolve().parents[2]
+    package = _package(tmp_path)
+    expression = (f"Set-Location -LiteralPath '{tmp_path}'; "
+                  f"& '{project / 'scripts' / 'setup.ps1'}' -Client None -PackageRoot 'package' -Check")
+    result = subprocess.run([_powershell(), "-NoProfile", "-NonInteractive", "-Command", expression],
+                            check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert json.loads(result.stdout)["PackageRoot"] == str(package)

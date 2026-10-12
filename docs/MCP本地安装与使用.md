@@ -8,6 +8,8 @@
 
 ## 安装
 
+首次接入 Codex 或 DSH Desktop，优先使用 [AI 安装与接入](AI安装与接入.md) 中的 `setup.ps1`。它会自动完成下载、安装、客户端配置和 MCP 检查；源码根目录的 `AGENTS.md` 是 AI 的直接入口。
+
 先验证发布 ZIP 旁的 `.zip.sha256`，解压后在 PowerShell 7 中执行：
 
 ```powershell
@@ -18,7 +20,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 默认安装位置为：
 
 ```text
-%LOCALAPPDATA%\Programs\DaVinciGW\versions\1.1.4\davinci-gw-mcp.exe
+%LOCALAPPDATA%\Programs\DaVinciGW\versions\1.1.5\davinci-gw-mcp.exe
 ```
 
 安装器在复制前核对 `SHA256SUMS.txt` 中的全部文件。每个版本安装到独立目录，升级时 Codex 配置切换到新版本，因此正在运行的旧会话不会阻塞新版本安装；相同版本、相同内容可重复安装。Codex 配置有变化时会在原文件旁创建带 UTC 时间戳的 `.bak`。安装器只维护带以下标记的配置块，不会重写其他配置：
@@ -44,7 +46,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ```toml
 [mcp_servers.davinci_gateway]
-command = 'C:\Users\YOUR_NAME\AppData\Local\Programs\DaVinciGW\versions\1.1.4\davinci-gw-mcp.exe'
+command = 'C:\Users\YOUR_NAME\AppData\Local\Programs\DaVinciGW\versions\1.1.5\davinci-gw-mcp.exe'
 startup_timeout_sec = 30
 tool_timeout_sec = 3600
 enabled = true

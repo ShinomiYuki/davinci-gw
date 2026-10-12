@@ -2,7 +2,9 @@
 param(
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "Programs\DaVinciGW"),
     [string]$CodexHome = (Join-Path $env:USERPROFILE ".codex"),
-    [bool]$RemoveCodexConfig = $true
+    [bool]$RemoveCodexConfig = $true,
+    [ValidateSet('Codex', 'DeepSeekHarness')][string]$Client = 'Codex',
+    [string]$DshHome
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,22 +65,11 @@ foreach ($runtime in $runtimeRecords) {
 }
 
 $configPath = Join-Path $codexDirectory "config.toml"
-$markerBegin = "# BEGIN DAVINCI_GW_MCP MANAGED BLOCK"
-$markerEnd = "# END DAVINCI_GW_MCP MANAGED BLOCK"
 $configChanged = $false
-if ($RemoveCodexConfig -and (Test-Path -LiteralPath $configPath)) {
-    $existing = Get-Content -LiteralPath $configPath -Raw
-    $beginCount = ([regex]::Matches($existing, [regex]::Escape($markerBegin))).Count
-    $endCount = ([regex]::Matches($existing, [regex]::Escape($markerEnd))).Count
-    if ($beginCount -ne $endCount -or $beginCount -gt 1) { throw "Codex 托管标记残缺或重复，拒绝卸载" }
-    $pattern = "(?ms)^" + [regex]::Escape($markerBegin) + ".*?^" + [regex]::Escape($markerEnd) + "\r?\n?"
-    $updated = [regex]::Replace($existing, $pattern, "").TrimEnd()
-    if ($updated -ne $existing.TrimEnd()) {
-        Copy-Item -LiteralPath $configPath -Destination "$configPath.$([DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff')).bak"
-        $content = if ($updated) { "$updated`r`n" } else { "" }
-        Set-Content -LiteralPath $configPath -Value $content -Encoding utf8NoBOM -NoNewline
-        $configChanged = $true
-    }
+if ($Client -eq 'DeepSeekHarness' -or $RemoveCodexConfig) {
+    $clientConfig = & (Join-Path $PSScriptRoot 'configure_mcp_client.ps1') -Client $Client -CodexHome $CodexHome -DshHome $DshHome -Remove
+    $configPath = $clientConfig.ConfigPath
+    $configChanged = $clientConfig.ConfigChanged
 }
 
 foreach ($runtimeDirectory in $runtimeDirectories) {

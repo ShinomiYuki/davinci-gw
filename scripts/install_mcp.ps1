@@ -3,7 +3,10 @@ param(
     [string]$PackageRoot = $PSScriptRoot,
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "Programs\DaVinciGW"),
     [string]$CodexHome = (Join-Path $env:USERPROFILE ".codex"),
-    [bool]$ConfigureCodex = $true
+    [bool]$ConfigureCodex = $true,
+    [ValidateSet('Codex', 'DeepSeekHarness', 'None')][string]$Client = 'Codex',
+    [string]$DshHome,
+    [switch]$Check
 )
 
 $ErrorActionPreference = "Stop"
@@ -86,18 +89,14 @@ if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
         }
     }
 }
-$markerBegin = "# BEGIN DAVINCI_GW_MCP MANAGED BLOCK"
-$markerEnd = "# END DAVINCI_GW_MCP MANAGED BLOCK"
-$managedPattern = "(?ms)^" + [regex]::Escape($markerBegin) + ".*?^" + [regex]::Escape($markerEnd) + "\r?\n?"
-$existing = ""
-if ($ConfigureCodex -and (Test-Path -LiteralPath $configPath)) {
-    $existing = Get-Content -LiteralPath $configPath -Raw
-    $beginCount = ([regex]::Matches($existing, [regex]::Escape($markerBegin))).Count
-    $endCount = ([regex]::Matches($existing, [regex]::Escape($markerEnd))).Count
-    if ($beginCount -ne $endCount -or $beginCount -gt 1) { throw "Codex 托管标记残缺或重复" }
-    if ([regex]::Replace($existing, $managedPattern, "") -match 'davinci_gateway') {
-        throw "Codex 配置已有非本安装器管理的 davinci_gateway 服务"
-    }
+$effectiveClient = if ($Client -eq 'Codex' -and -not $ConfigureCodex) { 'None' } else { $Client }
+$configureScript = Join-Path $PSScriptRoot 'configure_mcp_client.ps1'
+if ($effectiveClient -ne 'None') {
+    & $configureScript -Client $effectiveClient -Command $targetExe -CodexHome $CodexHome -DshHome $DshHome -Check | Out-Null
+}
+if ($Check) {
+    [pscustomobject]@{ PackageValidated = $true; Version = $version; Installed = $targetExe; Client = $effectiveClient }
+    return
 }
 
 New-Item -ItemType Directory -Path $versionsRoot -Force | Out-Null
@@ -130,38 +129,10 @@ foreach ($file in ($checksumRecords | Where-Object { $_.relative -eq "davinci-gw
 }
 
 $configChanged = $false
-if ($ConfigureCodex) {
-    New-Item -ItemType Directory -Path (Split-Path $configPath -Parent) -Force | Out-Null
-    $commandToml = ConvertTo-Json -Compress $targetExe
-    $block = @"
-$markerBegin
-[mcp_servers.davinci_gateway]
-command = $commandToml
-startup_timeout_sec = 30
-tool_timeout_sec = 3600
-enabled = true
-required = false
-default_tools_approval_mode = "writes"
-
-[mcp_servers.davinci_gateway.tools.generate_gateway_arxml]
-approval_mode = "prompt"
-[mcp_servers.davinci_gateway.tools.start_bug_repair]
-approval_mode = "prompt"
-[mcp_servers.davinci_gateway.tools.submit_bug_repair]
-approval_mode = "prompt"
-[mcp_servers.davinci_gateway.tools.cancel_bug_repair]
-approval_mode = "prompt"
-$markerEnd
-"@
-    $withoutManaged = [regex]::Replace($existing, $managedPattern, "").TrimEnd()
-    $updated = if ($withoutManaged) { "$withoutManaged`r`n`r`n$block`r`n" } else { "$block`r`n" }
-    if ($updated -ne $existing) {
-        if (Test-Path -LiteralPath $configPath) {
-            Copy-Item -LiteralPath $configPath -Destination "$configPath.$([DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff')).bak"
-        }
-        Set-Content -LiteralPath $configPath -Value $updated -Encoding utf8NoBOM -NoNewline
-        $configChanged = $true
-    }
+if ($effectiveClient -ne 'None') {
+    $clientConfig = & $configureScript -Client $effectiveClient -Command $targetExe -CodexHome $CodexHome -DshHome $DshHome
+    $configPath = $clientConfig.ConfigPath
+    $configChanged = $clientConfig.ConfigChanged
 }
 
 $runtimeFiles = $checksumRecords | Where-Object {
@@ -179,7 +150,9 @@ $retainedRuntimes = @($managedRuntimes | Where-Object {
 [ordered]@{
     current_version = $version
     runtimes = @($retainedRuntimes) + @($currentRuntime)
-    codex_config = if ($ConfigureCodex) { $configPath } else { $null }
+    client = $effectiveClient
+    codex_config = if ($effectiveClient -eq 'Codex') { $configPath } else { $null }
+    dsh_config = if ($effectiveClient -eq 'DeepSeekHarness') { $configPath } else { $null }
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
 
-[pscustomobject]@{ Installed = $targetExe; Version = $version; CodexConfig = $configPath; ConfigChanged = $configChanged }
+[pscustomobject]@{ Installed = $targetExe; Version = $version; Client = $effectiveClient; ClientConfig = $configPath; CodexConfig = $configPath; ConfigChanged = $configChanged }

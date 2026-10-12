@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Python = "python",
-    [string]$Version = "1.1.4"
+    [string]$Version = "1.1.5"
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,6 +67,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $runtimeSource "_internal") -PathTyp
 Get-ChildItem -LiteralPath $runtimeSource | Copy-Item -Destination $stageRoot -Recurse
 Copy-Item -LiteralPath (Join-Path $projectRoot "scripts\install_mcp.ps1") -Destination $stageRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "scripts\uninstall_mcp.ps1") -Destination $stageRoot
+foreach ($script in 'setup.ps1','configure_mcp_client.ps1','check_mcp.ps1') {
+    Copy-Item -LiteralPath (Join-Path $projectRoot "scripts\$script") -Destination $stageRoot
+}
+Copy-Item -LiteralPath (Join-Path $projectRoot 'AGENTS.md') -Destination $stageRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\AI安装与接入.md') -Destination $stageRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "packaging\codex-config.example.toml") -Destination $stageRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "LICENSE") -Destination (Join-Path $stageRoot "LICENSE.txt")
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs\MCP本地安装与使用.md") -Destination (Join-Path $stageRoot "README.md")
