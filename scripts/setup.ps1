@@ -1,9 +1,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidateSet('Codex', 'DeepSeekHarness', 'None')][string]$Client,
-    [ValidateSet('Package', 'Source')][string]$Mode = 'Package',
+    [ValidateSet('Auto', 'Package', 'Source', 'Build')][string]$Mode = 'Auto',
     [string]$PackageRoot,
-    [string]$Python = 'python',
+    [string]$Python,
+    [ValidateSet('Direct','Miniconda')][string]$Environment,
+    [string]$RuntimeRoot = (Join-Path $env:LOCALAPPDATA 'Programs\DaVinciGW\environment'),
+    [string]$CondaRoot,
+    [string]$PipIndexUrl,
+    [string]$CondaChannel,
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'Programs\DaVinciGW'),
     [string]$CodexHome = (Join-Path $env:USERPROFILE '.codex'),
     [string]$DshHome,
@@ -29,17 +34,36 @@ if (-not $isPackaged -and (Test-Path -LiteralPath (Join-Path $projectRoot 'pypro
 }
 $arguments = @()
 $download = $false
-if ($Mode -eq 'Source') {
-    if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'pyproject.toml'))) { throw 'Source 模式需要完整工程源码' }
-    $pythonCommand = Get-Command $Python -ErrorAction Stop
-    if ($pythonCommand.Source -like '*\WindowsApps\*') { throw '请用 -Python 指定已安装的 Python 3.12 或更新版本，不能使用商店占位程序' }
-    $pythonInfo = & $pythonCommand.Source -c 'import struct,sys; print(sys.version_info >= (3,12) and struct.calcsize("P")==8)'
-    if ($LASTEXITCODE -ne 0 -or $pythonInfo.Trim() -ne 'True') { throw '源码安装需要 64 位 Python 3.12 或更新版本' }
-    $runtimeCommand = Join-Path $projectRoot '.venv\Scripts\python.exe'
-    $arguments = @('-m', 'davinci_gw.mcp')
+$localPackage = Join-Path $projectRoot "release\davinci-gw-mcp-$version-win-x64"
+if ($Mode -eq 'Auto') {
+    $mirrorCheckout = $false
+    if (-not $isPackaged -and (Get-Command git -ErrorAction SilentlyContinue)) {
+        $remoteUrls = & git -C $projectRoot config --get-regexp '^remote\..*\.url$' 2>$null
+        $mirrorCheckout = [bool](@($remoteUrls | Where-Object { $_ -match '[/ :]davinci-gw-mirror(?:\.git)?/?$' }).Count)
+    }
+    $Mode = if ($PackageRoot -or $isPackaged -or (Test-Path -LiteralPath (Join-Path $localPackage 'davinci-gw-mcp.exe'))) { 'Package' }
+        elseif ($mirrorCheckout) { 'Build' } else { 'Package' }
+}
+# 同版本构建产物可直接复用，避免重新生成构建时间导致安装冲突。
+if ($Mode -eq 'Build' -and (Test-Path -LiteralPath (Join-Path $localPackage 'davinci-gw-mcp.exe'))) {
+    $Mode = 'Package'
+    $PackageRoot = $localPackage
+}
+$needsEnvironment = $Mode -in @('Source','Build')
+if ($needsEnvironment) {
+    if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'pyproject.toml'))) { throw '源码运行或本地构建需要完整工程源码' }
+    if ($Environment -eq 'Miniconda') {
+        $condaDirectory = if ($CondaRoot) { [IO.Path]::GetFullPath($CondaRoot) } else { Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) 'Miniconda3' }
+        $environmentPython = Join-Path $condaDirectory 'envs\davinci-gw\python.exe'
+    } else { $environmentPython = Join-Path $projectRoot '.venv\Scripts\python.exe' }
+    if ($Mode -eq 'Source') {
+        $runtimeCommand = $environmentPython
+        $arguments = @('-m', 'davinci_gw.mcp')
+    } else {
+        $runtimeCommand = Join-Path ([IO.Path]::GetFullPath($InstallRoot)) "versions\$version\davinci-gw-mcp.exe"
+    }
 } else {
     if (-not $PackageRoot) {
-        $localPackage = Join-Path $projectRoot "release\davinci-gw-mcp-$version-win-x64"
         if (Test-Path -LiteralPath (Join-Path $projectRoot 'davinci-gw-mcp.exe')) { $PackageRoot = $projectRoot }
         elseif (Test-Path -LiteralPath (Join-Path $localPackage 'davinci-gw-mcp.exe')) { $PackageRoot = $localPackage }
         else { $download = $true }
@@ -54,19 +78,27 @@ if ($Client -ne 'None') {
 if ($Check) {
     [ordered]@{ Version=$version; Client=$Client; Mode=$Mode; Command=$runtimeCommand; Arguments=$arguments;
         ConfigPath=$configuration.ConfigPath; DownloadRequired=$download; PackageRoot=$PackageRoot;
+        NeedsEnvironmentChoice=($needsEnvironment -and -not $Environment); Environment=$Environment;
+        EnvironmentChoices=@('Direct','Miniconda'); RuntimeRoot=$RuntimeRoot;
         Release="https://github.com/ShinomiYuki/davinci-gw/releases/tag/v$version" } | ConvertTo-Json -Depth 4
     return
 }
+if ($needsEnvironment -and -not $Environment) {
+    throw 'ENVIRONMENT_CHOICE_REQUIRED：请先让用户选择直装 Python（工程 .venv）或 Miniconda（davinci-gw 环境），再传 -Environment Direct 或 Miniconda。'
+}
 $temporary = $null
 try {
-    if ($Mode -eq 'Source') {
-        if (-not (Test-Path -LiteralPath $runtimeCommand -PathType Leaf)) {
-            & $pythonCommand.Source -m venv (Join-Path $projectRoot '.venv')
-            if ($LASTEXITCODE -ne 0) { throw '创建虚拟环境失败' }
+    if ($needsEnvironment) {
+        Import-Module (Join-Path $scriptRoot 'python_environment.psm1') -Force -DisableNameChecking
+        $environmentPython = Prepare-GatewayEnvironment -ProjectRoot $projectRoot -Environment $Environment -Python $Python -RuntimeRoot $RuntimeRoot -CondaRoot $CondaRoot -CondaChannel $CondaChannel
+        Install-GatewayDependencies -Python $environmentPython -ProjectRoot $projectRoot -PipIndexUrl $PipIndexUrl -Build:($Mode -eq 'Build')
+        if ($Mode -eq 'Source') { $runtimeCommand = $environmentPython }
+        else {
+            & (Join-Path $scriptRoot 'build_mcp_release.ps1') -Python $environmentPython -Version $version | Out-Host
+            $PackageRoot = $localPackage
         }
-        & $runtimeCommand -m pip install "$projectRoot[mcp]"
-        if ($LASTEXITCODE -ne 0) { throw '安装源码依赖失败；检查网络或 Python 包镜像设置后重试' }
-    } else {
+    }
+    if ($Mode -ne 'Source') {
         if ($download) {
             $temporary = Join-Path ([IO.Path]::GetTempPath()) "davinci-gw-setup-$([guid]::NewGuid().ToString('N'))"
             New-Item -ItemType Directory -Path $temporary | Out-Null
@@ -94,7 +126,7 @@ try {
         $configuration = & (Join-Path $scriptRoot 'configure_mcp_client.ps1') -Client $Client -Command $runtimeCommand -Arguments $arguments -CodexHome $CodexHome -DshHome $DshHome
     }
     [ordered]@{ Status=$health.Status; Version=$version; ToolCount=$health.ToolCount; Client=$Client;
-        Command=$runtimeCommand; ConfigPath=if ($Client -eq 'None') { $null } elseif ($Mode -eq 'Package') { $installed.ClientConfig } else { $configuration.ConfigPath };
+        Command=$runtimeCommand; ConfigPath=if ($Client -eq 'None') { $null } elseif ($Mode -ne 'Source') { $installed.ClientConfig } else { $configuration.ConfigPath };
         NextStep='重新加载 MCP 或重启当前客户端，然后调用 get_gateway_capabilities。' } | ConvertTo-Json -Depth 4
 } finally {
     if ($temporary -and (Test-Path -LiteralPath $temporary)) {

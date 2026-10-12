@@ -303,3 +303,59 @@ def test_setup_resolves_relative_package_from_powershell_location(tmp_path: Path
     result = subprocess.run([_powershell(), "-NoProfile", "-NonInteractive", "-Command", expression],
                             check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert json.loads(result.stdout)["PackageRoot"] == str(package)
+
+
+def _mirror_checkout(tmp_path: Path) -> Path:
+    project = Path(__file__).resolve().parents[2]
+    checkout = tmp_path / "mirror-checkout"
+    checkout.mkdir()
+    (checkout / "pyproject.toml").write_text('[project]\nversion = "1.1.5"\n', encoding="utf-8")
+    shutil.copytree(project / "scripts", checkout / "scripts")
+    subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin",
+                    "http://192.168.8.160/hao.xin/davinci-gw-mirror.git"], check=True, capture_output=True)
+    return checkout
+
+
+@pytest.mark.parametrize("remote", ["origin", "company"])
+def test_mirror_auto_chooses_local_build_and_requires_environment_choice(tmp_path: Path, remote: str) -> None:
+    checkout = _mirror_checkout(tmp_path)
+    if remote != "origin":
+        subprocess.run(["git", "-C", str(checkout), "remote", "rename", "origin", remote], check=True)
+    install_root = tmp_path / "installed"
+    result = _run(checkout / "scripts/setup.ps1", "-Client", "None",
+                  "-InstallRoot", str(install_root), "-Check")
+    planned = json.loads(result.stdout)
+    assert planned["Mode"] == "Build"
+    assert not planned["DownloadRequired"]
+    assert planned["NeedsEnvironmentChoice"]
+    result = _run(checkout / "scripts/setup.ps1", "-Client", "None",
+                  "-InstallRoot", str(install_root), check=False)
+    assert result.returncode != 0
+    assert "ENVIRONMENT_CHOICE_REQUIRED" in result.stderr
+    assert not install_root.exists() and not (checkout / ".venv").exists()
+
+
+@pytest.mark.parametrize("environment", ["Direct", "Miniconda"])
+def test_mirror_environment_plan_needs_no_existing_python(tmp_path: Path, environment: str) -> None:
+    checkout = _mirror_checkout(tmp_path)
+    runtime = tmp_path / "environment"
+    result = _run(checkout / "scripts/setup.ps1", "-Client", "None", "-Mode", "Source",
+                  "-Environment", environment, "-RuntimeRoot", str(runtime), "-Check")
+    planned = json.loads(result.stdout)
+    expected = (checkout / ".venv/Scripts/python.exe" if environment == "Direct"
+                else runtime / "Miniconda3/envs/davinci-gw/python.exe")
+    assert planned["Command"] == str(expected)
+    assert not planned["DownloadRequired"] and not planned["NeedsEnvironmentChoice"]
+    assert not runtime.exists()
+
+
+def test_explicit_build_reuses_existing_local_package(tmp_path: Path) -> None:
+    checkout = _mirror_checkout(tmp_path)
+    package = checkout / "release/davinci-gw-mcp-1.1.5-win-x64"
+    package.mkdir(parents=True)
+    (package / "davinci-gw-mcp.exe").write_bytes(b"test")
+    result = _run(checkout / "scripts/setup.ps1", "-Client", "None", "-Mode", "Build", "-Check")
+    planned = json.loads(result.stdout)
+    assert planned["Mode"] == "Package" and planned["PackageRoot"] == str(package)
+    assert not planned["NeedsEnvironmentChoice"] and not planned["DownloadRequired"]

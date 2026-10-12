@@ -70,6 +70,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "scripts\uninstall_mcp.ps1") -Des
 foreach ($script in 'setup.ps1','configure_mcp_client.ps1','check_mcp.ps1') {
     Copy-Item -LiteralPath (Join-Path $projectRoot "scripts\$script") -Destination $stageRoot
 }
+Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts\python_environment.psm1') -Destination $stageRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot 'packaging\python-mirrors.json') -Destination $stageRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'AGENTS.md') -Destination $stageRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\AI安装与接入.md') -Destination $stageRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "packaging\codex-config.example.toml") -Destination $stageRoot

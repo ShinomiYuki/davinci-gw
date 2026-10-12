@@ -116,7 +116,7 @@ CAN 通道识别唯一应用路由组。找不到、存在歧义或只有 CanTp/
 
 ## 安装
 
-首次接入时，在 Codex 或 DSH Desktop 打开本仓库并告诉 AI“安装这个工程并接入当前客户端”。AI 会从根目录 [AGENTS.md](AGENTS.md) 读取流程。也可在 PowerShell 7 中直接执行 `./scripts/setup.ps1 -Client DeepSeekHarness` 或 `-Client Codex`，自动下载对应版本的免 Python MCP 包、安装并配置客户端。使用本地包、源码模式和卸载见 [AI 安装与接入](docs/AI安装与接入.md)。
+首次接入时，在 Codex 或 DSH Desktop 打开本仓库并告诉 AI“安装这个工程并接入当前客户端”。AI 会从根目录 [AGENTS.md](AGENTS.md) 读取流程。也可在 PowerShell 7 中执行 `./scripts/setup.ps1 -Client DeepSeekHarness` 或 `-Client Codex`。默认优先本地包；公司镜像克隆没有包时从源码本地构建，其他情况下载对应版本包。需要准备 Python 环境时，AI 先询问直装或 Miniconda，再从可访问的国内镜像准备环境和依赖。使用本地包、源码模式和卸载见 [AI 安装与接入](docs/AI安装与接入.md)。
 
 在 Python 3.12 环境中进入工程目录：
 
