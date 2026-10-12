@@ -107,6 +107,19 @@ def test_install_rejects_tampered_executable(tmp_path: Path) -> None:
     assert not (install_root / "versions" / "1.0.0" / "davinci-gw-mcp.exe").exists()
 
 
+def test_install_check_accepts_unicode_document_in_checksum_manifest(tmp_path: Path) -> None:
+    project = Path(__file__).resolve().parents[2]
+    package = _package(tmp_path)
+    document = package / "AI安装与接入.md"
+    document.write_text("安装说明", encoding="utf-8")
+    manifest = package / "SHA256SUMS.txt"
+    with manifest.open("a", encoding="utf-8") as output:
+        output.write(f"{hashlib.sha256(document.read_bytes()).hexdigest()}  {document.name}\n")
+    _run(project / "scripts/install_mcp.ps1", "-PackageRoot", str(package),
+         "-InstallRoot", str(tmp_path / "installed"), "-Client", "None", "-Check")
+    assert not (tmp_path / "installed").exists()
+
+
 def test_install_rejects_unlisted_internal_file(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[2]
     package = _package(tmp_path)

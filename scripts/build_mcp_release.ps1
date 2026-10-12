@@ -87,7 +87,7 @@ $checksumLines = Get-ChildItem -LiteralPath $stageRoot -Recurse -File |
         $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $relative"
     }
-Set-Content -LiteralPath (Join-Path $stageRoot "SHA256SUMS.txt") -Value $checksumLines -Encoding ascii
+Set-Content -LiteralPath (Join-Path $stageRoot "SHA256SUMS.txt") -Value $checksumLines -Encoding utf8NoBOM
 $exeHash = (Get-FileHash -LiteralPath (Join-Path $stageRoot "davinci-gw-mcp.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
 
 if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force }
