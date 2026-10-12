@@ -14,5 +14,6 @@ release/davinci-gw-mcp-*-win-x64/
 release/davinci-gw-gui-*-win-x64/
 *.egg-info/
 .venv/
+docs/*开发日志*.md
 *.tmp.arxml
 .*.tmp.arxml
