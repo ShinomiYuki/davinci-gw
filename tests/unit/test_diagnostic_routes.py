@@ -411,7 +411,7 @@ def test_new_can_destination_gets_dedicated_queue(diagnostic_case):
 
 @pytest.mark.parametrize("existing_path", [True, False])
 def test_destinations_in_same_transport_path_share_queue(diagnostic_case, existing_path):
-    document, workbook, _, _ = diagnostic_case
+    document, workbook, container, _ = diagnostic_case
     index = document.build_index()
     if not existing_path:
         request = index.find_by_short_name("Req")[0]
@@ -444,8 +444,7 @@ def test_destinations_in_same_transport_path_share_queue(diagnostic_case, existi
                              if node.findtext(f"{{{document.namespace}}}SHORT-NAME") == "Dest")
         queue_ref = next(node for node in original_dest.iter()
                          if definition_ref(node, document.namespace) == d.PDUR_QUEUE_REF)
-        other_queue = next(node for node in index.find_by_definition_ref(d.PDUR_QUEUE)
-                           if node.findtext(f"{{{document.namespace}}}SHORT-NAME").startswith("GWT_Diag_"))
+        other_queue = container(index.find_by_short_name("Queue")[0].getparent(), "OtherQueue", d.PDUR_QUEUE)
         queue_ref.find(f"{{{document.namespace}}}VALUE-REF").text = autosar_path(other_queue, document.namespace)
         with pytest.raises(OutputValidationError, match="PduR N:M"):
             validate_generated_output(document, plan)
@@ -486,6 +485,172 @@ def test_dedicated_queue_delete_and_readd_cycle(diagnostic_case):
     restored = TransactionCoordinator(document, workbook).plan_and_apply()
     assert not restored.errors, [issue.message for issue in restored.issues]
     validate_generated_output(document, restored)
+
+
+def _add_doip_request(document, container, group, name="DoipRequest", queue_name="Queue",
+                      communication_type="TRANSPORT_PROTOCOL"):
+    """添加 DoIP 来源、CanTp 目标的既有 PduR 路径。"""
+    index = document.build_index()
+    namespace = document.namespace
+    path = lambda node: autosar_path(node, namespace)
+    transport = index.find_by_short_name("Transport")[0]
+    doip = index.find_by_short_name("DoIP")
+    if not doip:
+        module = container(transport.getparent(), "DoIP", "/MICROSAR/DoIP", module=True)
+        bsw = index.find_by_short_name("TransportModule")[0]
+        doip_bsw = container(bsw.getparent(), "DoipModule", d.PDUR_BSW_MODULE,
+                             references={d.PDUR_BSW_MODULE_REF: path(module)})
+    else:
+        doip_bsw = index.find_by_short_name("DoipModule")[0]
+    request = index.find_by_short_name("Req")[0]
+    destination = next(node for node in request.iter()
+                       if definition_ref(node, namespace) == d.PDUR_DEST)
+    parameters, references = semantic_values(destination, namespace)
+    route = container(request.getparent(), name, d.PDUR_PATH,
+                      {d.PDUR_PATH_COMM_TYPE: communication_type})
+    source = container(group(route, "SUB-CONTAINERS"), name + "Source", d.PDUR_SRC,
+                       {d.PDUR_SRC_DIRECTION: "RECEIVE"},
+                       {d.PDUR_SRC_PDU_REF: path(index.find_by_short_name("HighSRC_CANRx")[0]),
+                        d.PDUR_SRC_MODULE_REF: path(doip_bsw)})
+    destination_refs = {key: values[0] for key, values in references.items()}
+    destination_refs[d.PDUR_QUEUE_REF] = path(index.find_by_short_name(queue_name)[0])
+    target = container(group(route, "SUB-CONTAINERS"), name + "Destination", d.PDUR_DEST,
+                       {key: values[0] for key, values in parameters.items()}, destination_refs)
+    return route, source, target
+
+
+@pytest.mark.parametrize("communication_type", ["TRANSPORT_PROTOCOL", "COMMUNICATION_INTERFACE"])
+def test_can_destination_reuses_doip_queue_only_for_transport(diagnostic_case, communication_type):
+    document, workbook, container, group = diagnostic_case
+    doip, _, target = _add_doip_request(document, container, group,
+                                      communication_type=communication_type)
+    index = document.build_index()
+    request = index.find_by_short_name("Req")[0]
+    request.getparent().remove(request)
+    shared = next(node for node in index.find_by_short_name("Queue")[0].iter()
+                  if definition_ref(node, document.namespace) == d.PDUR_SHARED_QUEUE)
+    for node in shared.iter():
+        if definition_ref(node, document.namespace) == d.PDUR_SHARED_QUEUE + "/PduRQueueDepth":
+            node.find(f"{{{document.namespace}}}VALUE").text = "7"
+    plan = TransactionCoordinator(document, workbook).plan_and_apply()
+    assert not plan.errors, plan.issues
+    validate_generated_output(document, plan)
+    destinations = [op for op in plan.operations if op.definition_ref == d.PDUR_DEST]
+    assert len(destinations) == 1
+    doip_queue = semantic_values(target, document.namespace)[1][d.PDUR_QUEUE_REF][0]
+    if communication_type == "TRANSPORT_PROTOCOL":
+        assert destinations[0].reference(d.PDUR_QUEUE_REF) == doip_queue
+        assert not any(op.definition_ref == d.PDUR_QUEUE for op in plan.operations)
+        assert semantic_values(shared, document.namespace)[0][d.PDUR_SHARED_QUEUE + "/PduRQueueDepth"] == ("7",)
+        repeated = TransactionCoordinator(document, workbook).plan_and_apply()
+        assert not repeated.errors and not repeated.operations
+        original = workbook.diagnostic_routes[0]
+        deleted = TransactionCoordinator(document, replace(workbook, diagnostic_routes=(
+            replace(original, operation=OperationType.DELETE),))).plan_and_apply()
+        assert not deleted.errors, deleted.issues
+        validate_generated_output(document, deleted)
+        index = document.build_index()
+        assert index.find_by_path(doip_queue)
+        assert index.find_by_path(autosar_path(doip, document.namespace))
+        assert index.find_by_path(semantic_values(target, document.namespace)[1][d.PDUR_DEST_PDU_REF][0])
+    else:
+        assert destinations[0].reference(d.PDUR_QUEUE_REF) != doip_queue
+
+
+def test_cross_path_queue_conflict_is_reported_without_changing_baseline(diagnostic_case):
+    document, workbook, container, group = diagnostic_case
+    first, _, _ = _add_doip_request(document, container, group)
+    index = document.build_index()
+    queue = index.find_by_short_name("Queue")[0]
+    container(queue.getparent(), "OtherQueue", d.PDUR_QUEUE)
+    second, _, _ = _add_doip_request(document, container, group, "OtherDoipRequest", "OtherQueue")
+    plan = TransactionCoordinator(document, workbook).plan_and_apply()
+    assert plan.errors
+    assert any("既有 Queue" in issue.message and "OtherQueue" in issue.message for issue in plan.errors)
+    assert not plan.operations
+    assert first.getparent() is not None and second.getparent() is not None
+
+
+def test_queue_reuse_follows_indirect_transport_path_connections(diagnostic_case):
+    document, workbook, container, group = diagnostic_case
+    doip, _, target = _add_doip_request(document, container, group)
+    index = document.build_index()
+    _, references = semantic_values(target, document.namespace)
+    references = {key: values[0] for key, values in references.items()}
+    references[d.PDUR_DEST_PDU_REF] = autosar_path(index.find_by_short_name("HighSRC_CANTx")[0], document.namespace)
+    container(group(doip, "SUB-CONTAINERS"), "OtherDestination", d.PDUR_DEST, references=references)
+    request = index.find_by_short_name("Req")[0]
+    request.getparent().remove(request)
+    plan = TransactionCoordinator(document, workbook).plan_and_apply()
+    assert not plan.errors, plan.issues
+    assert not any(op.definition_ref == d.PDUR_QUEUE for op in plan.operations)
+    validate_generated_output(document, plan)
+
+
+def test_output_checks_queue_across_can_and_doip_paths(diagnostic_case):
+    document, workbook, container, group = diagnostic_case
+    _, _, target = _add_doip_request(document, container, group)
+    index = document.build_index()
+    request = index.find_by_short_name("Req")[0]
+    request.getparent().remove(request)
+    plan = TransactionCoordinator(document, workbook).plan_and_apply()
+    assert not plan.errors, plan.issues
+    index = document.build_index()
+    other_queue = container(index.find_by_short_name("Queue")[0].getparent(), "OtherQueue", d.PDUR_QUEUE)
+    reference = next(node for node in target.iter()
+                     if definition_ref(node, document.namespace) == d.PDUR_QUEUE_REF)
+    reference.find(f"{{{document.namespace}}}VALUE-REF").text = autosar_path(other_queue, document.namespace)
+    with pytest.raises(OutputValidationError, match="PduR N:M"):
+        validate_generated_output(document, plan)
+
+
+def test_batch_merges_planned_queues_when_transport_groups_join(diagnostic_case):
+    document, workbook, _, _ = diagnostic_case
+    original = workbook.diagnostic_routes[0]
+    first = replace(original,
+                    request_endpoint=replace(original.request_endpoint, request_id=0x700, response_id=0x708),
+                    response_endpoint=replace(original.response_endpoint, request_id=0x710, response_id=0x718))
+    second = replace(first, source=SourceLocation("诊断报文路由", 3),
+                     request_endpoint=replace(first.request_endpoint, request_id=0x701, response_id=0x709),
+                     response_endpoint=replace(first.response_endpoint, request_id=0x711, response_id=0x719))
+    bridge = replace(first, source=SourceLocation("诊断报文路由", 4),
+                     response_endpoint=second.response_endpoint)
+    plan = TransactionCoordinator(document, replace(workbook,
+                                  diagnostic_routes=(first, second, bridge))).plan_and_apply()
+    assert not plan.errors, plan.issues
+    assert plan.diagnostic_added_count == 3
+    validate_generated_output(document, plan)
+    assert sum(op.definition_ref == d.PDUR_QUEUE for op in plan.operations) == 2
+    index = document.build_index()
+    paths = [index.find_by_short_name(name)[0] for name in (
+        "GWT_Diag_PduR_700_SRC_CAN_To_DST_CAN", "GWT_Diag_PduR_701_SRC_CAN_To_DST_CAN")]
+    queues = {semantic_values(node, document.namespace)[1][d.PDUR_QUEUE_REF]
+              for path in paths for node in path.iter()
+              if definition_ref(node, document.namespace) == d.PDUR_DEST}
+    assert len(queues) == 1
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_new_shared_queue_preserves_7df_depth_regardless_of_row_order(diagnostic_case, reverse):
+    document, workbook, _, _ = diagnostic_case
+    original = workbook.diagnostic_routes[0]
+    first = replace(original,
+                    request_endpoint=replace(original.request_endpoint, request_id=0x700, response_id=0x708),
+                    response_endpoint=replace(original.response_endpoint, request_id=0x710, response_id=0x718))
+    second = replace(first, source=SourceLocation("诊断报文路由", 3),
+                     request_endpoint=replace(first.request_endpoint, request_id=0x7DF, response_id=0x7E7))
+    routes = (second, first) if reverse else (first, second)
+    plan = TransactionCoordinator(document, replace(workbook, diagnostic_routes=routes)).plan_and_apply()
+    assert not plan.errors, plan.issues
+    validate_generated_output(document, plan)
+    requests = [op for op in plan.operations if op.definition_ref == d.PDUR_DEST
+                and op.short_name.endswith("DST_CAN")]
+    queues = {op.reference(d.PDUR_QUEUE_REF) for op in requests}
+    assert len(requests) == 2 and len(queues) == 1
+    shared = next(op for op in plan.operations if op.definition_ref == d.PDUR_SHARED_QUEUE
+                  and op.parent_path in queues)
+    assert shared.parameter(d.PDUR_SHARED_QUEUE + "/PduRQueueDepth") == "5"
+    assert shared.parameter(d.PDUR_SHARED_QUEUE + "/PduRTpThreshold") == "0"
 
 
 def test_new_functional_route_has_no_fc_or_response_and_depth_five(diagnostic_case):

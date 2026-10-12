@@ -1,6 +1,6 @@
 """CAN 诊断引用链规划；仅从完整引用定位端点，不使用 CanTp 名称判定通道。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 from davinci_gw.arxml.index import autosar_path
@@ -13,6 +13,7 @@ from davinci_gw.input.diagnostic_reader import channel_properties
 from davinci_gw.modules import definitions as d
 from davinci_gw.modules.common import HandleAllocator, definition_ref, semantic_values, unique_named_node
 from .naming import safe_name
+from .transport_queues import TransportQueueGroups
 
 
 class DiagnosticConflict(ArxmlStructureError):
@@ -44,7 +45,7 @@ class DiagnosticRoutePlanner:
         self.endpoint_cache = {}
         self.planned_sources = {}
         self.planned_destinations = {}
-        self.planned_path_queues = {}
+        self.queue_groups = TransportQueueGroups(self.index, self.ns)
 
     def path(self, node):
         return autosar_path(node, self.ns)
@@ -419,11 +420,10 @@ class DiagnosticRoutePlanner:
         for route in self.workbook.diagnostic_routes:
             if route.operation is not OperationType.ADD:
                 continue
-            before = len(self.operations)
+            saved_operations = self.operations.copy()
             saved_endpoints = self.endpoint_cache.copy()
             saved_sources = self.planned_sources.copy()
             saved_destinations = self.planned_destinations.copy()
-            saved_queues = self.planned_path_queues.copy()
             try:
                 for endpoint, request_side in ((route.request_endpoint, True), (route.response_endpoint, False)):
                     if endpoint:
@@ -434,26 +434,23 @@ class DiagnosticRoutePlanner:
                 if route.request_endpoint:
                     request = self.endpoint(route, route.request_endpoint, True)
                     self.route_pair(route, request, response)
-                if len(self.operations) == before:
+                if self.operations == saved_operations:
                     existing += 1
                 else:
                     added += 1
             except DiagnosticSkipped as exc:
-                from dataclasses import replace
-                del self.operations[before:]
+                self.operations = saved_operations
                 self.endpoint_cache = saved_endpoints
                 self.planned_sources = saved_sources
                 self.planned_destinations = saved_destinations
-                self.planned_path_queues = saved_queues
                 issues.append(replace(self.issue(route, exc), code="DIAGNOSTIC_CHANNEL_REFERENCE_SKIPPED",
                                       severity=ValidationSeverity.WARNING))
                 skipped += 1
             except (DiagnosticConflict, ValueError) as exc:
-                del self.operations[before:]
+                self.operations = saved_operations
                 self.endpoint_cache = saved_endpoints
                 self.planned_sources = saved_sources
                 self.planned_destinations = saved_destinations
-                self.planned_path_queues = saved_queues
                 issues.append(self.issue(route, exc))
         return MutationPlan(operations=tuple(self.operations), issues=tuple(issues),
                             diagnostic_added_count=added, diagnostic_existing_count=existing,
@@ -502,10 +499,9 @@ class DiagnosticRoutePlanner:
                 self.planned_sources[source] = path
             if len(destinations) > 1:
                 raise DiagnosticConflict(f"目标上层 PDU {target} 在路径 {path} 中重复。")
+            queue = self.queue_for_destination(path, target, self.queue_depth(route, can_id))
             if destinations:
                 destination = destinations[0]
-                queue = self.ref(destination, d.PDUR_QUEUE_REF)
-                self.node(queue)
                 dest_path = self.path(destination)
             else:
                 destination_id = (route.request_endpoint.response_id if is_response
@@ -521,16 +517,8 @@ class DiagnosticRoutePlanner:
                                         f"{safe_name(source_channel)}_To_{safe_name(target_channel)}")
                 if occupied(destination_name):
                     raise DiagnosticConflict(f"PduR 目标符号名 {destination_name} 已占用，不能重复创建。")
-                queue = self.planned_path_queues.get(path)
-                if queue is None and sources:
-                    existing_queues = {value for child in self.children(path_node, d.PDUR_DEST)
-                                       for value in self.values(child)[1].get(d.PDUR_QUEUE_REF, ())}
-                    if existing_queues:
-                        queue = self.one(existing_queues, f"路径 {path} 的既有目标 Queue")
-                        self.node(queue, d.PDUR_QUEUE)
                 if queue is None:
                     queue = self.new_queue(route, can_id, source_channel, target_channel)
-                self.planned_path_queues[path] = queue
                 dest_path = self.create(MutationKind.PDUR_DEST_PDU, path,
                     destination_name, d.PDUR_DEST,
                     {d.PDUR_DEST_HANDLE: str(self.pdur.dest_handles.allocate()),
@@ -542,8 +530,53 @@ class DiagnosticRoutePlanner:
                 self.response_group(route, dest_path, target_channel)
             self.planned_destinations[(source, target)] = dest_path
 
+    def queue_for_destination(self, path, target, minimum_depth=3):
+        """复用整个关联组的队列；既有队列冲突时保留基线并报错。"""
+        group = self.queue_groups.connected_queues(path, target, self.operations)
+        references = [queues for entries in group.values() for queues in entries]
+        if any(len(queues) != 1 or not queues[0] for queues in references):
+            raise DiagnosticConflict(f"PduR N:M 路径 {sorted(group)} 的目标 Queue 引用缺失或不唯一。")
+        queues = {values[0] for values in references}
+        if not queues:
+            return None
+        created_queues = [op.object_path for op in self.operations
+                          if op.action is MutationAction.CREATE and op.definition_ref == d.PDUR_QUEUE]
+        existing_queues = queues - set(created_queues)
+        if existing_queues:
+            selected = self.one(existing_queues, f"PduR N:M 路径 {sorted(group)} 的既有 Queue")
+            self.node(selected, d.PDUR_QUEUE)
+        else:
+            selected = next(queue for queue in created_queues if queue in queues)
+            depth_definition = d.PDUR_SHARED_QUEUE + "/PduRQueueDepth"
+            depth = max([minimum_depth] + [int(op.parameter(depth_definition))
+                        for op in self.operations if op.definition_ref == d.PDUR_SHARED_QUEUE
+                        and op.parent_path in queues])
+            self.operations = [replace(op, parameters=tuple(
+                (definition, str(depth) if definition == depth_definition else value)
+                for definition, value in op.parameters))
+                if op.definition_ref == d.PDUR_SHARED_QUEUE and op.parent_path == selected else op
+                for op in self.operations]
+        replaced = queues - {selected}
+        if replaced:
+            self.operations = [replace(op, references=tuple(
+                (definition, selected if definition == d.PDUR_QUEUE_REF and value in replaced else value)
+                for definition, value in op.references)) for op in self.operations]
+            # 合并尚未写入的队列后，移除已无引用的本次新建队列及其子容器。
+            used = {value for op in self.operations for _, value in op.references}
+            unused = replaced - used
+            self.operations = [op for op in self.operations
+                               if not any(op.object_path == queue or op.object_path.startswith(queue + "/")
+                                          for queue in unused)]
+        return selected
+
+    def queue_depth(self, route, can_id):
+        """新队列按普通路由或功能寻址要求确定容量。"""
+        functional = (route.response_endpoint.response_id is None or can_id == 0x7DF
+                      or can_id in self.workbook.diagnostic_functional_ids)
+        return 5 if functional else 3
+
     def new_queue(self, route, can_id, source_channel, target_channel):
-        """每个新增目标腿独占一个 Queue；共享缓冲池引用只取基线唯一语义。"""
+        """没有可复用队列时创建 Queue，缓冲池引用取基线唯一组合。"""
         parents = [self.path(n.getparent().getparent()) for n in self.index.find_by_definition_ref(d.PDUR_QUEUE)]
         name = f"GWT_Diag_PduRQueue_{can_id:X}_{safe_name(source_channel)}_To_{safe_name(target_channel)}"
         queue = self.create(MutationKind.PDUR_QUEUE, self.one(parents, "PduRQueue 父路径"), name,
@@ -553,9 +586,7 @@ class DiagnosticRoutePlanner:
             refs = self.values(node)[1]
             signatures.add(tuple(sorted((key, value) for key, values in refs.items() for value in values)))
         references = self.one(signatures, "PduRSharedBufferQueue 的缓冲池引用")
-        functional = (route.response_endpoint.response_id is None or can_id == 0x7DF
-                      or can_id in self.workbook.diagnostic_functional_ids)
-        overrides = {d.PDUR_SHARED_QUEUE + "/PduRQueueDepth": "5" if functional else "3",
+        overrides = {d.PDUR_SHARED_QUEUE + "/PduRQueueDepth": str(self.queue_depth(route, can_id)),
                      d.PDUR_SHARED_QUEUE + "/PduRTpThreshold": "0"}
         self.create(MutationKind.PDUR_QUEUE, queue, "PduRSharedBufferQueue", d.PDUR_SHARED_QUEUE,
                     self.template_parameters(d.PDUR_SHARED_QUEUE, overrides), references, route)
