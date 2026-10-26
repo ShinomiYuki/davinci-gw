@@ -69,7 +69,7 @@ class SignalRoutePlanner:
         message = key.source_message_name if source else key.target_message_name
         signal = key.source_signal_name if source else key.target_signal_name
         role = "源" if source else "目标"
-        direction = "RECEIVE" if source else "TRANSMIT"
+        direction = "RECEIVE" if source else "SEND"
         state, ipdu, signal_node, candidate_count = self.com.locate_signal_endpoint(
             message, signal, network, direction,
         )
@@ -77,7 +77,7 @@ class SignalRoutePlanner:
             return None, None, _issue(
                 self.workbook, route, f"SIGNAL_{role}_IPDU_SKIPPED",
                 f"基准ARXML中未找到{role}报文“{message}”在网段“{network}”的ComIPdu，"
-                "可能尚未导入对应DBC，已跳过该信号路由；请更新DBC或核对报文名。",
+                f"所需方向为“{direction}”，已跳过该信号路由；请核对 Com 配置和报文归属。",
                 warning=True,
             )
         if state == "IPDU_AMBIGUOUS":
@@ -93,7 +93,7 @@ class SignalRoutePlanner:
             return ipdu, None, _issue(
                 self.workbook, route, f"SIGNAL_{role}_SIGNAL_SKIPPED",
                 f"{role}ComIPdu“{ipdu_name}”中"
-                f"未找到信号“{signal}”，可能基线DBC版本较旧，已跳过该路由；请更新DBC后重试。",
+                f"未找到信号“{signal}”的直接引用，已跳过该路由；请核对基准信号配置。",
                 warning=True,
             )
         if state == "SIGNAL_AMBIGUOUS":
@@ -102,6 +102,17 @@ class SignalRoutePlanner:
                 f"{role}报文“{message}”中的信号“{signal}”存在 {candidate_count} 个"
                 "结构候选，无法安全选择；请清理重复DBC对象或补充项目映射证据。",
                 warning=False,
+            )
+        if state in {"IDENTITY_UNCONFIRMED", "OWNERSHIP_UNCONFIRMED", "REFERENCE_CONFLICT"}:
+            detail = {
+                "IDENTITY_UNCONFIRMED": "存在名称差异，但原始信号身份尚未确认，已跳过该路由",
+                "OWNERSHIP_UNCONFIRMED": "Com 逻辑网段归属尚未确定，不能证明物理 CAN 通道，已跳过该路由",
+                "REFERENCE_CONFLICT": "PDU、信号引用、Com 方向或逻辑网段归属存在冲突，无法安全选择",
+            }[state]
+            return ipdu, None, _issue(
+                self.workbook, route, f"SIGNAL_{role}_{state}",
+                f"{role}报文“{message}”、信号“{signal}”、网段“{network}”：{detail}。",
+                warning=state != "REFERENCE_CONFLICT",
             )
         return ipdu, signal_node, None
 

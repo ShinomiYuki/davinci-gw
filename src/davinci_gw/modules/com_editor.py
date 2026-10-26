@@ -32,112 +32,171 @@ class ComEditor:
         self.document = document
         self.index = index or document.build_index()
         self._parameter_templates: dict[str, etree._Element] = {}
+        self._endpoint_evidence: dict[etree._Element, tuple[
+            set[str], set[str], tuple[str, ...], tuple[str, ...], bool,
+        ]] = {}
         self.mapping_parent = unique_template_parent_path(
             document.root, document.namespace, defs.COM_GW_MAPPING, index=self.index,
         )
 
-    def _ipdu_candidates(
-        self, message_name: str, direction: str, *, network: str | None = None,
-    ) -> tuple[etree._Element, ...]:
-        """按报文、方向以及可选的网段证据返回 ComIPdu 候选。"""
-        suffix = "_Rx" if direction == "RECEIVE" else "_Tx"
-        prefix = f"{message_name}_o"
-        network_markers = (() if network is None else
-                           (f"_{network}Messagelis_", f"_o{network}_"))
-        candidates: list[etree._Element] = []
-        for node in self.index.find_by_definition_ref(defs.COM_IPDU):
-            name = direct_child_text(node, self.document.namespace, "SHORT-NAME") or ""
-            if not name.startswith(prefix) or not name.endswith(suffix):
+    @staticmethod
+    def _logical_network(name: str) -> str | None:
+        """只识别明确的 Com 逻辑网段标记，不推断物理 CAN 通道。"""
+        match = re.search(r"(?:^|_)(?:o)?([A-Za-z0-9]+)Messagelis(?:_|$)", name)
+        if match is None:
+            match = re.search(r"_o([A-Za-z0-9]+)(?:_(?:Rx|Tx)(?:_|$)|$)", name)
+        return match[1] if match else None
+
+    @staticmethod
+    def _message_identity(name: str) -> str | None:
+        return name.split("_o", 1)[0] if "_o" in name else None
+
+    @staticmethod
+    def _signal_identity_matches(actual: str, expected: str, network: str) -> bool:
+        """仅接受精确原名或已确认的网段 CAN 加十进制编号后缀。"""
+        return actual == expected or re.fullmatch(
+            rf"{re.escape(expected)}_{re.escape(network)}CAN_[0-9]+", actual,
+        ) is not None
+
+    def _ipdu_evidence(
+        self, ipdu: etree._Element,
+    ) -> tuple[set[str], set[str], tuple[str, ...], tuple[str, ...], bool]:
+        """收集 PDU、分组和原始信号引用；生成对象名不决定方向。"""
+        if ipdu in self._endpoint_evidence:
+            return self._endpoint_evidence[ipdu]
+        parameters, references = semantic_values(ipdu, self.document.namespace)
+        messages: set[str] = set()
+        networks: set[str] = set()
+        valid = True
+        pdu_paths = references.get(defs.COM_PDU_ID_REF, ())
+        if len(pdu_paths) != 1:
+            valid = False
+        for path in pdu_paths:
+            nodes = self.index.find_by_path(path)
+            if len(nodes) != 1 or definition_ref(nodes[0], self.document.namespace) != defs.ECUC_PDU:
+                valid = False
+            message = self._message_identity(path.rsplit("/", 1)[-1])
+            if message:
+                messages.add(message)
+        for path in references.get(defs.COM_IPDU_GROUP_REF, ()):
+            nodes = self.index.find_by_path(path)
+            if len(nodes) != 1 or definition_ref(nodes[0], self.document.namespace) != defs.COM_IPDU_GROUP:
+                valid = False
+            network = self._logical_network(path.rsplit("/", 1)[-1])
+            if network:
+                networks.add(network)
+        signal_paths = references.get(defs.COM_IPDU_SIGNAL_REF, ())
+        for path in signal_paths:
+            nodes = self.index.find_by_path(path)
+            if len(nodes) != 1 or definition_ref(nodes[0], self.document.namespace) != defs.COM_SIGNAL:
+                valid = False
                 continue
-            if network_markers and not any(marker in name for marker in network_markers):
-                continue
-            candidates.append(node)
-        return tuple(candidates)
-
-    def locate_ipdu(
-        self, message_name: str, network: str, direction: str,
-    ) -> tuple[str, etree._Element | None]:
-        """按报文名、方向和网段标识定位唯一 ComIPdu。"""
-        candidates = self._ipdu_candidates(message_name, direction, network=network)
-        if not candidates:
-            return "MISSING", None
-        if len(candidates) != 1:
-            return "AMBIGUOUS", None
-        return "FOUND", candidates[0]
-
-    def _signal_candidates(
-        self, ipdu: etree._Element, message_name: str, signal_name: str,
-    ) -> tuple[etree._Element, ...]:
-        """返回由指定 ComIPdu 直接引用且报文/信号名前缀精确一致的信号。"""
-        _, references = semantic_values(ipdu, self.document.namespace)
-        paths = references.get(defs.COM_IPDU_SIGNAL_REF, ())
-        prefix = f"{signal_name}_o{message_name}_o"
-        candidates: list[etree._Element] = []
-        for path in paths:
-            for node in self.index.find_by_path(path):
-                name = direct_child_text(node, self.document.namespace, "SHORT-NAME") or ""
-                if definition_ref(node, self.document.namespace) == defs.COM_SIGNAL and name.startswith(prefix):
-                    candidates.append(node)
-        return tuple(candidates)
-
-    def locate_signal(
-        self, ipdu: etree._Element, message_name: str, signal_name: str,
-    ) -> tuple[str, etree._Element | None]:
-        """只在 ComIPdu 的 ComIPduSignalRef 中定位信号，验证报文归属关系。"""
-        candidates = self._signal_candidates(ipdu, message_name, signal_name)
-        if not candidates:
-            return "MISSING", None
-        if len(candidates) != 1:
-            return "AMBIGUOUS", None
-        return "FOUND", candidates[0]
+            _, signal_refs = semantic_values(nodes[0], self.document.namespace)
+            originals = signal_refs.get(defs.COM_SYSTEM_SIGNAL_REF, ())
+            if len(originals) > 1:
+                valid = False
+            for original in originals:
+                if not original.startswith("/") or len(original.rstrip("/").split("/")) < 4 or original.endswith("/"):
+                    valid = False
+                    continue
+                parent = original.rstrip("/").rsplit("/", 2)[-2]
+                message = self._message_identity(parent) or parent
+                network = self._logical_network(parent)
+                if message:
+                    messages.add(message)
+                if network:
+                    networks.add(network)
+        if not messages:
+            name = (pdu_paths[0].rsplit("/", 1)[-1] if len(pdu_paths) == 1 else
+                    direct_child_text(ipdu, self.document.namespace, "SHORT-NAME") or "")
+            message = self._message_identity(name)
+            if message or name:
+                messages.add(message or name)
+        result = messages, networks, parameters.get(defs.COM_IPDU_DIRECTION, ()), signal_paths, valid
+        self._endpoint_evidence[ipdu] = result
+        return result
 
     def locate_signal_endpoint(
         self, message_name: str, signal_name: str, network: str, direction: str,
     ) -> tuple[str, etree._Element | None, etree._Element | None, int]:
-        """精确定位信号端点，并为逻辑 LIN 网段提供项目无关的唯一性回退。
-
-        CAN 端点仍要求 SHORT-NAME 中存在配置表网段标记。只有常规网段定位为零，
-        且候选 ComIPdu 名称明确带 ``_oLIN..._`` 时，才改用“报文名、信号名、
-        方向、ComIPduSignalRef”四项结构证据。LIN 逻辑节点名与物理通道名因项目而异，
-        因此这里既不维护静态映射，也不按字符串相似度猜测；结构候选不唯一就阻断。
-        """
-        ipdus = self._ipdu_candidates(message_name, direction, network=network)
-        if len(ipdus) > 1:
-            return "IPDU_AMBIGUOUS", None, None, len(ipdus)
-        if len(ipdus) == 1:
-            signals = self._signal_candidates(ipdus[0], message_name, signal_name)
-            if not signals:
-                return "SIGNAL_MISSING", ipdus[0], None, 0
-            if len(signals) != 1:
-                return "SIGNAL_AMBIGUOUS", ipdus[0], None, len(signals)
-            return "FOUND", ipdus[0], signals[0], 1
-
-        all_ipdus = self._ipdu_candidates(message_name, direction)
-        lin_ipdus = tuple(
-            ipdu for ipdu in all_ipdus
-            if re.search(
-                r"_oLIN[^_]*_",
-                direct_child_text(ipdu, self.document.namespace, "SHORT-NAME") or "",
-            ) is not None
-        )
-        endpoint_pairs: list[tuple[etree._Element, etree._Element]] = []
-        for ipdu in all_ipdus:
-            endpoint_pairs.extend(
-                (ipdu, signal)
-                for signal in self._signal_candidates(ipdu, message_name, signal_name)
+        """按 Com 方向、唯一 PDU 和直接信号引用定位；结构冲突优先于名称。"""
+        candidates: list[etree._Element] = []
+        other_pairs: list[tuple[etree._Element, etree._Element, bool]] = []
+        unresolved = False
+        for ipdu in self.index.find_by_definition_ref(defs.COM_IPDU):
+            messages, networks, directions, paths, valid = self._ipdu_evidence(ipdu)
+            if message_name not in messages:
+                continue
+            conflict = not valid or len(messages) != 1 or len(networks) > 1 or len(directions) != 1
+            if networks and network not in networks:
+                # 保留既有 LIN 唯一结构回退，CAN 不跨网段回退。
+                is_lin = any(n.startswith("LIN") for n in networks)
+                if conflict:
+                    if is_lin:
+                        return "REFERENCE_CONFLICT", ipdu, None, 0
+                    continue
+                if directions == (direction,):
+                    signals, differing = self._endpoint_signals(paths, signal_name, next(iter(networks)))
+                    if differing == "CONFLICT" and is_lin:
+                        return "REFERENCE_CONFLICT", ipdu, None, 0
+                    other_pairs.extend((ipdu, signal, is_lin)
+                                       for signal in signals)
+                continue
+            if conflict:
+                return "REFERENCE_CONFLICT", ipdu, None, 0
+            if not networks:
+                unresolved = True
+                continue
+            if directions != (direction,):
+                if directions not in {("RECEIVE",), ("SEND",)}:
+                    return "REFERENCE_CONFLICT", ipdu, None, 0
+                continue
+            candidates.append(ipdu)
+        if len(candidates) > 1:
+            return "IPDU_AMBIGUOUS", None, None, len(candidates)
+        if candidates:
+            ipdu = candidates[0]
+            _, references = semantic_values(ipdu, self.document.namespace)
+            signals, differing = self._endpoint_signals(
+                references.get(defs.COM_IPDU_SIGNAL_REF, ()), signal_name, network,
             )
-        lin_pairs = tuple(pair for pair in endpoint_pairs if pair[0] in lin_ipdus)
-        # “只看报文名和信号名”仍以全局结构唯一为前提：若同名端点同时存在于
-        # CAN 与 LIN，不能因为只筛 LIN 就掩盖歧义并错误选择物理通道。
-        if len(endpoint_pairs) == 1 and len(lin_pairs) == 1:
-            ipdu, signal = endpoint_pairs[0]
+            if len(signals) > 1:
+                return "SIGNAL_AMBIGUOUS", ipdu, None, len(signals)
+            if differing == "CONFLICT":
+                return "REFERENCE_CONFLICT", ipdu, None, 0
+            if signals:
+                return "FOUND", ipdu, signals[0], 1
+            return ("IDENTITY_UNCONFIRMED" if differing else "SIGNAL_MISSING"), ipdu, None, 0
+        if any(pair[2] for pair in other_pairs):
+            if len(other_pairs) > 1:
+                return "SIGNAL_AMBIGUOUS", None, None, len(other_pairs)
+            ipdu, signal, _ = other_pairs[0]
             return "FOUND", ipdu, signal, 1
-        if lin_pairs and len(endpoint_pairs) > 1:
-            return "SIGNAL_AMBIGUOUS", None, None, len(endpoint_pairs)
-        if lin_ipdus:
-            ipdu = lin_ipdus[0] if len(lin_ipdus) == 1 else None
-            return "SIGNAL_MISSING", ipdu, None, 0
-        return "IPDU_MISSING", None, None, 0
+        return ("OWNERSHIP_UNCONFIRMED" if unresolved else "IPDU_MISSING"), None, None, 0
+
+    def _endpoint_signals(
+        self, paths: tuple[str, ...], signal_name: str, network: str,
+    ) -> tuple[tuple[etree._Element, ...], str]:
+        candidates: list[etree._Element] = []
+        differing = ""
+        for path in dict.fromkeys(paths):
+            nodes = self.index.find_by_path(path)
+            if len(nodes) != 1 or definition_ref(nodes[0], self.document.namespace) != defs.COM_SIGNAL:
+                return (), "CONFLICT"
+            signal = nodes[0]
+            _, references = semantic_values(signal, self.document.namespace)
+            originals = references.get(defs.COM_SYSTEM_SIGNAL_REF, ())
+            if len(originals) > 1:
+                return (), "CONFLICT"
+            name = direct_child_text(signal, self.document.namespace, "SHORT-NAME") or ""
+            generated_identity = name.split("_o", 1)[0]
+            identity = originals[0].rsplit("/", 1)[-1] if originals else generated_identity
+            if self._signal_identity_matches(identity, signal_name, network):
+                candidates.append(signal)
+            elif (identity.startswith(signal_name + "_")
+                  or self._signal_identity_matches(generated_identity, signal_name, network)):
+                differing = "DIFFERENT"
+        return tuple(candidates), differing
 
     def mapping_operation(
         self, short_name: str, locations: tuple[SourceLocation, ...],
@@ -169,28 +228,37 @@ class ComEditor:
         return tuple(candidates)
 
     def gateway_references_for_signal_identity(
-        self, message_name: str, signal_name: str, direction: str,
+        self, message_name: str, signal_name: str, direction: str, *, network: str,
     ) -> tuple[str, ...]:
-        """返回网关 Mapping 中仍与报文/信号身份匹配的引用路径。
-
-        DELETE 遇到已被 DBC 移除的 ComIPdu 时，不能仅凭端点缺失就断言路由
-        已不存在；旧 Mapping 仍可能保留指向已删除 ComSignal 的悬空引用。这里
-        只检查 ComGwSource/ComGwDestination 的真实引用，并以完整信号名前缀和
-        Rx/Tx 边界匹配，避免相似报文或信号名称造成误判。
-        """
+        """按网关角色与原始身份保留 DELETE 悬空引用保护，无法归属的悬空引用也阻断。"""
         reference_definition = (
             defs.COM_GW_SOURCE_SIGNAL_REF
             if direction == "RECEIVE" else defs.COM_GW_DEST_SIGNAL_REF
         )
-        prefix = f"{signal_name}_o{message_name}_o"
-        suffix = "_Rx" if direction == "RECEIVE" else "_Tx"
         matches: set[str] = set()
         for mapping in self.index.find_by_definition_ref(defs.COM_GW_MAPPING):
             _, references = semantic_values(mapping, self.document.namespace, recursive=True)
             for path in references.get(reference_definition, ()):
                 short_name = path.rstrip("/").rsplit("/", 1)[-1]
-                if short_name.startswith(prefix) and short_name.endswith(suffix):
+                nodes = self.index.find_by_path(path)
+                # 对象已删除且名字不可识别时，不能证明悬空引用与本次 DELETE 无关。
+                if not nodes:
                     matches.add(path)
+                    continue
+                for node in nodes:
+                    _, refs = semantic_values(node, self.document.namespace)
+                    originals = refs.get(defs.COM_SYSTEM_SIGNAL_REF, ())
+                    identities = originals or (short_name,)
+                    for identity in identities:
+                        if originals and (not identity.startswith("/") or len(identity.split("/")) < 4):
+                            matches.add(path)
+                            continue
+                        name = identity.rsplit("/", 1)[-1].split("_o", 1)[0]
+                        parent = identity.rsplit("/", 2)[-2] if originals else short_name.partition("_o")[2]
+                        identity_network = self._logical_network(parent) or network
+                        if (self._signal_identity_matches(name, signal_name, identity_network)
+                                and (self._message_identity(parent) or parent) == message_name):
+                            matches.add(path)
         return tuple(sorted(matches))
 
     def find_destination_by_signal(

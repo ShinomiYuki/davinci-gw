@@ -435,8 +435,8 @@ def test_delete_lin_destination_by_unique_message_signal_relationship(
 def test_one_to_many_signal_delete_keeps_mapping_source_and_timeout(
     workbook_factory: object, generated_arxml_factory: object, tmp_path: Path,
 ) -> None:
-    second = signal_row(**{"目标信号名": "DST_SIG_2"})
-    baseline = generated_arxml_factory(signal_rows=(signal_row(), second))
+    second = signal_row(**{"目标信号名": "DST_SIG_2", "目标网段": "DST2"})
+    baseline = generated_arxml_factory(signal_rows=(signal_row(), second), second_signal_network="DST2")
     output = tmp_path / "signal_one_leg_deleted.arxml"
     report = generate_inputs(
         workbook_factory(direct_rows=(), signal_rows=(_delete_signal(),)), baseline, output,
@@ -446,8 +446,8 @@ def test_one_to_many_signal_delete_keeps_mapping_source_and_timeout(
     index = document.build_index()
     mapping_path = "/Cfg/Com/ComConfig/GWT_Sig_SRC_SIG_SRC"
     assert len(index.find_by_path(mapping_path)) == 1
-    assert not index.find_by_path(f"{mapping_path}/ComGwDestination_DST_SIG_DST")
-    assert len(index.find_by_path(f"{mapping_path}/ComGwDestination_DST_SIG_2_DST")) == 1
+    assert not index.find_by_path(f"{mapping_path}/ComGwDestination_to_DST")
+    assert len(index.find_by_path(f"{mapping_path}/ComGwDestination_to_DST2")) == 1
     source = index.find_by_path("/Cfg/Com/ComConfig/SRC_SIG_oSRC_MSG_oSRC_Rx")[0]
     parameters, _ = semantic_values(source, document.namespace)
     assert parameters[defs.COM_TIMEOUT] == ("2",)
@@ -666,7 +666,7 @@ def test_signal_delete_preserves_mapping_with_unknown_manual_child(
     index = document.build_index()
     mapping_path = "/Cfg/Com/ComConfig/GWT_Sig_SRC_SIG_SRC"
     assert len(index.find_by_path(mapping_path)) == 1
-    assert not index.find_by_path(f"{mapping_path}/ComGwDestination_DST_SIG_DST")
+    assert not index.find_by_path(f"{mapping_path}/ComGwDestination_to_DST")
     assert len(index.find_by_path(f"{mapping_path}/ManualChild")) == 1
     assert len(index.find_by_path(f"{mapping_path}/ComGwSource_SRC_SIG_SRC")) == 1
     source = index.find_by_path("/Cfg/Com/ComConfig/SRC_SIG_oSRC_MSG_oSRC_Rx")[0]
@@ -680,7 +680,7 @@ def test_signal_destination_nested_object_with_external_reference_blocks_output(
     baseline = generated_arxml_factory(signal_rows=(signal_row(),))
     nested_destination = (
         "/Cfg/Com/ComConfig/GWT_Sig_SRC_SIG_SRC/"
-        "ComGwDestination_DST_SIG_DST/ComGwSignal"
+        "ComGwDestination_to_DST/ComGwSignal"
     )
     _append_reference_to_shared_node(baseline, nested_destination)
     output = tmp_path / "referenced_nested_signal_destination.arxml"

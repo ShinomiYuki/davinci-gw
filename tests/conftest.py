@@ -120,6 +120,7 @@ def arxml_factory(tmp_path: Path) -> Callable[..., Path]:
         duplicate: str | None = None,
         extra: bool = False,
         routing_groups: Mapping[str, Sequence[str]] | None = None,
+        second_signal_network: str = "DST",
     ) -> Path:
         ns = "http://autosar.org/schema/r4.0"
         xsi = "http://www.w3.org/2001/XMLSchema-instance"
@@ -183,6 +184,8 @@ def arxml_factory(tmp_path: Path) -> Callable[..., Path]:
                     subcontainers(collection), "ExistingPdu_Rx", defs.ECUC_PDU,
                     ((defs.ECUC_PDU_LENGTH, 8, "NUMERICAL"), (defs.ECUC_PDU_J1939, "false", "TEXTUAL")),
                 )
+                for pdu_name in dict.fromkeys(("SRC_MSG_oSRC", "DST_MSG_oDST", f"DST_MSG_o{second_signal_network}")):
+                    add_container(collection.find(f"{{{ns}}}SUB-CONTAINERS"), pdu_name, defs.ECUC_PDU)
             elif name == "CanIf":
                 init = add_container(containers, "CanIfInitCfg", "/MICROSAR/CanIf/CanIfInitCfg")
                 init_subs = subcontainers(init)
@@ -293,7 +296,27 @@ def arxml_factory(tmp_path: Path) -> Callable[..., Path]:
                 add_reference(src_ipdu, defs.COM_IPDU_SIGNAL_REF, "/Cfg/Com/ComConfig/SRC_SIG_oSRC_MSG_oSRC_Rx")
                 dst_ipdu = add_container(config_subs, "DST_MSG_oDST_Tx", defs.COM_IPDU)
                 add_reference(dst_ipdu, defs.COM_IPDU_SIGNAL_REF, "/Cfg/Com/ComConfig/DST_SIG_oDST_MSG_oDST_Tx")
-                add_reference(dst_ipdu, defs.COM_IPDU_SIGNAL_REF, "/Cfg/Com/ComConfig/DST_SIG_2_oDST_MSG_oDST_Tx")
+                endpoints = [
+                    (src_ipdu, "SRC_MSG", "SRC", "RECEIVE", (src_signal,)),
+                    (dst_ipdu, "DST_MSG", "DST", "SEND", (dst_signal,)),
+                ]
+                second_ipdu = dst_ipdu
+                if second_signal_network != "DST":
+                    second_ipdu = add_container(config_subs, "OtherDestination", defs.COM_IPDU)
+                    endpoints.append((second_ipdu, "DST_MSG", second_signal_network, "SEND", (dst_signal_2,)))
+                else:
+                    endpoints[1] = (dst_ipdu, "DST_MSG", "DST", "SEND", (dst_signal, dst_signal_2))
+                add_reference(second_ipdu, defs.COM_IPDU_SIGNAL_REF, "/Cfg/Com/ComConfig/DST_SIG_2_oDST_MSG_oDST_Tx")
+                for ipdu, message, network, direction, signals in endpoints:
+                    add_parameter(ipdu, defs.COM_IPDU_DIRECTION, direction)
+                    group_name = f"Group_o{network}"
+                    add_container(config_subs, group_name, defs.COM_IPDU_GROUP)
+                    add_reference(ipdu, defs.COM_IPDU_GROUP_REF, f"/Cfg/Com/ComConfig/{group_name}")
+                    pdu_name = f"{message}_o{network}"
+                    add_reference(ipdu, defs.COM_PDU_ID_REF, f"/Cfg/EcuC/EcucPduCollection/{pdu_name}")
+                    for signal in signals:
+                        identity = signal.findtext(f"{{{ns}}}SHORT-NAME").split("_o", 1)[0]
+                        add_reference(signal, defs.COM_SYSTEM_SIGNAL_REF, f"/PDU/{pdu_name}/{identity}")
                 mapping = add_container(config_subs, "TemplateMapping", defs.COM_GW_MAPPING)
                 mapping_subs = subcontainers(mapping)
                 source = add_container(mapping_subs, "ComGwSource", defs.COM_GW_SOURCE)
@@ -364,11 +387,17 @@ def lin_target_arxml_factory(
 
         for channel in channels:
             renamed_paths: dict[str, str] = {}
+            group = deepcopy(named("Group_oDST"))
+            group.find(f"{{{namespace}}}SHORT-NAME").text = f"Group_o{channel}"
+            parent.append(group)
             clones = [deepcopy(signal) for signal in original_signals]
             for clone, signal_name in zip(clones, ("DST_SIG", "DST_SIG_2"), strict=True):
                 old_path = f"/Cfg/Com/ComConfig/{signal_name}_oDST_MSG_oDST_Tx"
                 new_name = f"{signal_name}_oDST_MSG_o{channel}_Tx"
                 clone.find(f"{{{namespace}}}SHORT-NAME").text = new_name
+                for value_ref in clone.iter(f"{{{namespace}}}VALUE-REF"):
+                    if value_ref.text and value_ref.text.startswith("/PDU/DST_MSG_oDST/"):
+                        value_ref.text = value_ref.text.replace("/PDU/DST_MSG_oDST/", f"/PDU/DST_MSG_o{channel}/")
                 renamed_paths[old_path] = f"/Cfg/Com/ComConfig/{new_name}"
                 parent.append(clone)
             ipdu = deepcopy(original_ipdu)
@@ -376,6 +405,8 @@ def lin_target_arxml_factory(
             for value_ref in ipdu.iter(f"{{{namespace}}}VALUE-REF"):
                 if value_ref.text in renamed_paths:
                     value_ref.text = renamed_paths[value_ref.text]
+                elif value_ref.text == "/Cfg/Com/ComConfig/Group_oDST":
+                    value_ref.text = f"/Cfg/Com/ComConfig/Group_o{channel}"
             parent.append(ipdu)
 
         tree.write(str(path), encoding="UTF-8", xml_declaration=True, pretty_print=True)
@@ -396,6 +427,7 @@ def generated_arxml_factory(
         direct_rows: Iterable[Mapping[str, object]] = (),
         signal_rows: Iterable[Mapping[str, object]] = (),
         reference_rows: Iterable[Mapping[str, object]] | None = None,
+        second_signal_network: str = "DST",
     ) -> Path:
         nonlocal counter
         counter += 1
@@ -405,7 +437,7 @@ def generated_arxml_factory(
             signal_rows=signal_rows,
             reference_rows=reference_rows,
         )
-        baseline = arxml_factory(filename=f"delete_source_{counter}.arxml")
+        baseline = arxml_factory(filename=f"delete_source_{counter}.arxml", second_signal_network=second_signal_network)
         output = tmp_path / f"delete_generated_{counter}.arxml"
         report = generate_inputs(config, baseline, output)
         assert report.is_success, [issue.message for issue in report.all_issues]

@@ -75,10 +75,10 @@ def test_single_signal_route_and_source_timeout(
 def test_signal_one_to_many_has_one_source_and_two_destinations(
     workbook_factory: object, arxml_factory: object, tmp_path: Path,
 ) -> None:
-    rows = (signal_row(), signal_row(**{"目标信号名": "DST_SIG_2"}))
+    rows = (signal_row(), signal_row(**{"目标信号名": "DST_SIG_2", "目标网段": "DST2"}))
     output = tmp_path / "signal_many.arxml"
     report = generate_inputs(
-        workbook_factory(direct_rows=(), signal_rows=rows), arxml_factory(), output,
+        workbook_factory(direct_rows=(), signal_rows=rows), arxml_factory(second_signal_network="DST2"), output,
     )
     assert report.is_success, _messages(report)
     assert report.plan.signal_added_count == 2
@@ -331,13 +331,13 @@ def test_existing_source_mapping_only_adds_missing_destination(
     workbook_factory: object, arxml_factory: object, tmp_path: Path,
 ) -> None:
     first = tmp_path / "one_destination.arxml"
-    assert generate_inputs(workbook_factory(direct_rows=()), arxml_factory(), first).is_success
+    assert generate_inputs(workbook_factory(direct_rows=()), arxml_factory(second_signal_network="DST2"), first).is_success
 
     second = tmp_path / "two_destinations.arxml"
     report = generate_inputs(
         workbook_factory(
             filename="add_destination_v4.84.xlsx", direct_rows=(),
-            signal_rows=(signal_row(**{"目标信号名": "DST_SIG_2"}),),
+            signal_rows=(signal_row(**{"目标信号名": "DST_SIG_2", "目标网段": "DST2"}),),
         ),
         first,
         second,

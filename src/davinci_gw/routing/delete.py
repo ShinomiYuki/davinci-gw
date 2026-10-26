@@ -666,14 +666,14 @@ class DeleteCoordinator:
         network = key.source_network if source else key.target_network
         message = key.source_message_name if source else key.target_message_name
         signal = key.source_signal_name if source else key.target_signal_name
-        direction = "RECEIVE" if source else "TRANSMIT"
+        direction = "RECEIVE" if source else "SEND"
         role = "源" if source else "目标"
         state, ipdu, signal_node, candidate_count = self.com.locate_signal_endpoint(
             message, signal, network, direction,
         )
-        if state == "IPDU_MISSING":
+        if state in {"IPDU_MISSING", "SIGNAL_MISSING"}:
             remaining_references = self.com.gateway_references_for_signal_identity(
-                message, signal, direction,
+                message, signal, direction, network=network,
             )
             if not remaining_references:
                 self.issues.append(_issue(
@@ -694,14 +694,20 @@ class DeleteCoordinator:
             self.issues.append(_issue(
                 self.workbook, route, "SIGNAL_DELETE_IPDU_UNRESOLVED",
                 f"{role} ComIPdu（报文“{message}”、网段“{network}”、方向“{direction}”）"
-                f"候选数为{candidate_count}，无法确认 DELETE 目标。请补齐 DBC 或清理重复候选。",
+                f"候选数为{candidate_count}，无法确认 DELETE 目标。请核对 Com 引用并清理重复候选。",
             ))
             return None
         if state != "FOUND" or signal_node is None:
+            reason = {
+                "IDENTITY_UNCONFIRMED": "存在名称差异但信号身份未确认",
+                "OWNERSHIP_UNCONFIRMED": "Com 逻辑网段归属未确定，未证明物理 CAN 通道",
+                "REFERENCE_CONFLICT": "引用、方向或归属存在冲突",
+                "SIGNAL_AMBIGUOUS": "信号候选不唯一",
+            }.get(state, "信号未能定位")
             self.issues.append(_issue(
                 self.workbook, route, "SIGNAL_DELETE_SIGNAL_UNRESOLVED",
                 f"{role} ComSignal“{signal}”在报文“{message}”内候选数为"
-                f"{candidate_count}，无法安全删除。请核对 DBC 和信号归属。",
+                f"{candidate_count}，{reason}，无法安全删除。请核对 Com 引用和信号归属。",
             ))
             return None
         return signal_node
