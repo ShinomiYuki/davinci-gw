@@ -13,6 +13,7 @@ from pathlib import Path
 
 from doip_mapping import mapping_key, mapping_values, normalize_mapping
 from extract_diagnostic_candidates import reference_channels
+from review_requirements import review_manifest
 
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -343,6 +344,9 @@ def main():
     args = parser.parse_args()
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    review_errors = review_manifest(manifest)
+    if review_errors:
+        parser.error("需求审核未通过：\n" + "\n".join(review_errors))
     version = str(manifest.get("output_version", "")).strip().lstrip("Vv")
     if not version:
         parser.error("Manifest output_version is required")

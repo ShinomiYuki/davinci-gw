@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -149,10 +150,8 @@ def numeric_value(value):
 
 
 def timeout_from_cycle(send_type, cycle_time_ms):
-    if "cyclic" not in clean(send_type).casefold():
-        return None, None
     cycle = numeric_value(cycle_time_ms)
-    if cycle is None or cycle <= 0:
+    if cycle is None or not math.isfinite(cycle) or cycle <= 0:
         return None, None
     if cycle <= 20:
         timeout_ms = 500
@@ -224,7 +223,7 @@ def direct_records(sheet):
                         "column": letter,
                         "subnet": subnet,
                         "channel": channel,
-                        "allowed": allowed,
+                        "allowed": allowed and source_frame.upper() != "LIN" and not clean(row[2]).upper().startswith("FL_LIN_"),
                     }
                 )
         records.append(
@@ -267,7 +266,7 @@ def signal_records(sheet):
                         "column": letter,
                         "subnet": subnet,
                         "network": network,
-                        "allowed": allowed,
+                        "allowed": allowed and not clean(row[2]).upper().startswith("FL_LIN_") and not subnet.startswith("FL_LIN_"),
                     }
                 )
         timeout_ms, timeout_seconds = timeout_from_cycle(row[9], row[10])
@@ -320,6 +319,31 @@ def all_route_names_and_ids(sheet):
     return names, ids
 
 
+def generated_signal_records(sheet):
+    records = []
+    for number, row in enumerate(sheet.iter_rows(min_row=5, max_col=51, values_only=True), 5):
+        name = clean(row[14])
+        if not name.endswith("Timeout_Flag") or clean(row[1]):
+            continue
+        records.append({
+            "row": number,
+            "target_signal": name,
+            "target_message": clean(row[15]),
+            "target_id": clean(row[17]),
+            "target_start_bit": row[21],
+            "target_signal_length": row[22],
+            "target_byte_order": clean(row[23]),
+            "project_marks": project_marks(row),
+            "target_legs": [
+                {"column": letter, "subnet": subnet, "network": network, "allowed": allowed and not subnet.startswith("FL_LIN_")}
+                for column, (letter, subnet, network, allowed) in SIGNAL_TARGET_COLUMNS.items()
+                if "√" in clean(row[column - 1])
+            ],
+            "implementation": "application_timeout_flag",
+        })
+    return records
+
+
 def version_groups(history):
     markers = []
     for row in range(3, history.max_row + 1):
@@ -355,6 +379,7 @@ def main():
 
     records = direct_records(flzcu)
     signals = signal_records(flzcu)
+    generated_signals = generated_signal_records(flzcu)
     flzcu_names = {
         name
         for record in records
@@ -474,6 +499,7 @@ def main():
                         "candidate_flzcu_rows": message_candidates,
                         "candidate_message_rows": message_candidates,
                         "candidate_signal_rows": signal_candidates,
+                        "candidate_generated_signals": [record for record in generated_signals if not excluded_before_matching and record["target_signal"].casefold() in folded],
                     }
                 )
 
@@ -497,6 +523,7 @@ def main():
         "project_mode": args.project_mode,
         "project_transition_candidates": transition_candidates,
         "history_units": units,
+        "generated_signal_definitions": generated_signals,
         "summary": {
             "history_units": len(units),
             "units_with_candidates": sum(

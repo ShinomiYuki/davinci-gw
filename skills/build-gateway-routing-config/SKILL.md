@@ -2,17 +2,19 @@
 name: build-gateway-routing-config
 description: 从原始网关需求生成标准配置表，支持整帧、信号、CAN诊断的ADD/DELETE及DoIP_to_CAN映射。适用于History/FLZCU变更、选定的CAN诊断行，以及明确要求按logicalAddress汇总Tester与CAN请求/响应的DoIP转CAN输入准备；不生成DoIP ARXML配置。
 metadata:
-  version: "1.2.0"
+  version: "1.3.2"
 ---
 
 # Build Gateway Routing Config
 
-Generate incremental direct-message, signal, or CAN diagnostic route legs with explicit `ADD` or `DELETE` operations, and prepare seven-column `DoIP_to_CAN` mappings on explicit request. The mapping sheet is input for the next development stage, not executable DoIP ARXML support. Never generate LIN message routes, FRZCU routes, AZ-project outputs, or report files. Allow LIN legs for signal routing only.
+Generate incremental direct-message, signal, or CAN diagnostic route legs with explicit `ADD` or `DELETE` operations, and prepare seven-column `DoIP_to_CAN` mappings on explicit request. The mapping sheet is input for the next development stage, not executable DoIP ARXML support. Never generate any LIN forwarding routes (including signal routing), FRZCU routes, AZ-project outputs, or report files. List excluded LIN routes in the conversation with their requirement locations.
 
 ## Required resources
 
 - Use `assets/网关路由配置表空白模板.xlsx` as the immutable output template.
 - Read `references/routing-rules.md` before resolving requirements.
+- Read `references/requirement-review.md` for History work. Preserve explicit user decisions from the current or relevant prior conversation before classifying anything as omitted.
+- Requirement review is a local data-completeness check, not code review. Do not invoke native Codex review or review agents for this workflow. Check demand coverage and required parameters only; an absent optional matrix timeout value remains a valid blank.
 - Read `references/diagnostic-routing-rules.md` when diagnostic routing is in scope.
 - Read `references/doip-can-routing-rules.md` for DoIP-to-CAN mapping scope; do not apply the CAN-to-CAN source-channel or transport-parameter workflow to that sheet.
 - Read `references/manifest-schema.md` before creating the temporary manifest.
@@ -28,14 +30,16 @@ Generate incremental direct-message, signal, or CAN diagnostic route legs with e
 5. Always ask which project-mark mode to use unless the user already specified exactly one: `AX列变更`, `AY列变更`, `AX→AY`, or `AY→AX`. Never infer a mode. Ignore AZ in every mode.
 6. Preserve History row order. Treat the last selected version in workbook order as the output version. For `V4.83 + V4.84`, name the output with `v4.84`.
 7. Map the selected mode to `AX`, `AY`, `AX_TO_AY`, or `AY_TO_AX`. Run `scripts/extract_candidates.py <workbook> --versions <versions...> --project-mode <mode> --output <temporary-candidates.json>`.
-8. Review the selected History text and candidate FLZCU rows. Resolve each eligible message or signal change to exact route legs. Use strict signal/message name, CAN ID, source subnet, and target subnet evidence. Use fuzzy matches only as suggestions and request user confirmation before writing them.
-9. Ignore explicit FRZCU content and anything matched to `Routing(FRZCU)`. Ignore `Cycle Message Routing`, LIN message routes, AZ, and the `FL_CANFD_DM` target column. For signal routes, allow CAN↔LIN and LIN↔LIN legs present in `Routing(FLZCU)`.
+8. Review the selected History text and candidate FLZCU rows. Resolve each eligible message or signal change to exact route legs. Use strict signal/message name, CAN ID, source subnet, and target subnet evidence. Use fuzzy matches only as suggestions and request user confirmation before writing them. Compare each target against all applicable FLZCU requirements, not just this run's additions. If distinct sources feed the same target, disclose both complete paths and do not output those additions. Do not choose a source yourself. Existing explicit user source choices may resolve applicability; preserve their evidence per run. Do not exclude unrelated paths merely because their message name matches a multi-source message.
+9. Ignore explicit FRZCU content and anything matched to `Routing(FRZCU)`. Exclude `Cycle Message Routing`, every route with a LIN source or destination, AZ, and the `FL_CANFD_DM` target column. Keep LIN candidates for conversational disclosure. Distinguish FRZCU RE→GL from a separate FLZCU GL→DK leg even when the message name is identical.
 10. Apply the operation and project-mark rules in `references/routing-rules.md`. Apply selected versions in History order. Deduplicate identical route legs. Let later modifications replace earlier values. Let an `ADD` followed by a selected later `DELETE` of the same complete key cancel to no output; let `DELETE` followed by `ADD` resolve to `ADD`.
 11. Create a temporary manifest matching `references/manifest-schema.md`. Every route must have `operation: ADD` or `operation: DELETE`. Expand every marked target subnet into one route leg. Represent signal one-to-many as multiple one-to-one entries. Do not create an audit/report workbook or report sheet.
-12. If the manifest contains signal routes, run `scripts/apply_signal_invalid_values.py --manifest <manifest> --signal-matrix <customer-matrix> --output <enriched-manifest>`. Use the enriched manifest for all following steps. This lookup uses only the source network, source message, and source signal; it reads column AA `Invalid Value(Hex)` from the matching source-network sheet. A blank AA cell is a resolved blank value. Never fall back to the target signal. Exclude `DM_FD`.
+12. If the manifest contains signal routes, first classify the exact source signal using its source-matrix message G `Msg Send Type`. Pure `Event` is the mapping-only exception: set `routing_mode=MAPPING_ONLY`, leave timeout time/value blank and perform no other parameter changes. `CE` retains a cyclic component and is not this exception. Calculate the other signal timeouts from their source cycles, regardless of spelling. Preserve an explicit user-approved timeout exception with its source key, value, reason and conversation evidence. Run `scripts/apply_signal_invalid_values.py --manifest <manifest> --signal-matrix <customer-matrix> --output <enriched-manifest>` to resolve the mode and source-matrix values. Use the enriched manifest for all following steps. Read only the source network/message/signal's column AA `Invalid Value(Hex)` for non-Event rows. Fill a value when present; leave it blank when absent. Never substitute the target signal or an invented default. Ambiguous matches block output. Exclude `DM_FD`.
+    Complete the requirement review described in `references/requirement-review.md`, then run `scripts/review_requirements.py --manifest <enriched-manifest>`. The writer also enforces this review before writing. A missing History disposition, missing output reference, unexpected LIN/FRZCU route, incorrect timeout or matrix mismatch blocks generation.
+    Pure Event rows may have blank or zero source cycle and blank timeout fields without a missing-parameter error. For downstream ARXML work, only create the mapping: do not change SignalAccess, timeout, substitution, callbacks, signal layout or send settings. The eleven-column worksheet does not encode `routing_mode`; blank timeout cells alone do not prove a downstream tool supports mapping-only changes. Report Event row locations and do not apply them through a tool that unconditionally makes other changes.
 13. Run `scripts/write_gateway_config.py --manifest <manifest>`. Omit `--output` to save on the user's actual Windows Desktop, or pass the path requested by the user.
 14. Run `scripts/validate_output.py --manifest <manifest> --workbook <output>`.
-15. Return the output workbook link. Report only in the conversation: selected project modes or explicit row ranges, ADD/DELETE counts, unmatched or ambiguous requirements, duplicate rows removed, selected changes canceled to no output, and explicitly requested exceptions. Do not report silently ignored FRZCU, AZ, LIN-message, `FL_CANFD_DM`, pure DoIP, or DoLIN items unless the user asks.
+15. Return the output workbook link. Report in the conversation: selected project modes or explicit row ranges, ADD/DELETE counts, excluded LIN routes and their locations, unmatched or ambiguous requirements, duplicate rows removed, changes canceled to no output, explicit user deferrals and exceptions, and requirements needing application logic rather than forwarding. Do not claim such application requirements have been implemented. Do not add a report workbook or sheet.
 
 ## Diagnostic workflow
 
@@ -62,6 +66,7 @@ Generate incremental direct-message, signal, or CAN diagnostic route legs with e
 - Never modify the requirement workbook or bundled template.
 - Never overwrite an existing output silently. The writer adds a timestamp when the target exists unless `-Overwrite` is explicitly supplied after user authorization.
 - Stop before writing if a required message or signal route is ambiguous and the user has not approved a candidate.
-- Stop before writing if a signal route cannot be matched uniquely in its source-network signal-matrix sheet. A blank AA value is valid; a missing source signal is not.
+- Match route identity from the routing requirement. Matrix lookup supplies only the optional timeout value: absence means blank, while multiple source matches are a blocking ambiguity.
+- Do not turn a user-approved deferral, condition or name correction into a reported omission. Record decisions per run rather than making project-specific examples universal skill defaults.
 - Stop before writing if a diagnostic target cannot map to a template CAN channel, if either selected sheet lacks a resolved source CAN channel, or if any required transport parameter is absent. Always derive type and length from the mapped channel rule, even when the requirement network name contains `CANFD`.
 - Keep CAN IDs as hexadecimal text and lengths as values copied from FLZCU.

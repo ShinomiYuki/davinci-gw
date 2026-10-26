@@ -129,7 +129,7 @@ Create one temporary UTF-8 JSON manifest per run. DoIP-to-CAN mapping-only runs 
 - Set `project_mode` to `AX`, `AY`, `AX_TO_AY`, or `AY_TO_AX` only for direct/signal History work; mapping-only work does not require it.
 - Set every direct, signal, and diagnostic route `operation` to exactly `ADD` or `DELETE`.
 - `routes` contains only resolved, non-LIN, direct-message route legs.
-- `signal_routes` contains resolved signal route legs and may contain CAN or LIN networks.
+- `signal_routes` contains resolved CAN signal route legs. LIN at either end is excluded and disclosed in the conversation.
 - `diagnostic_routes` contains selected CAN diagnostic demands. Set `entry_type` to `OBD_CAN` or `OBD_ETH`; one entry represents the atomic request/response pair.
 - Expand one FLZCU row with multiple selected target subnets into one manifest route per target channel.
 - Use only channel names present in the template `引用数据` sheet.
@@ -137,10 +137,13 @@ Create one temporary UTF-8 JSON manifest per run. DoIP-to-CAN mapping-only runs 
 - Preserve FLZCU message names and lengths exactly.
 - Include `history_rows` and `flzcu_row` for internal validation and conversational reporting; the writer does not add them to the workbook.
 - Expand one signal row with multiple target marks into one `signal_routes` entry per target network. Deduplicate by source network/message/signal plus target network/message/signal.
-- Use short network codes in signal output (`CH`, `GL`, `RLHS`, and so on), not `FL_CANFD_*` or `FL_LIN_*` subnet strings.
-- After resolving signal routes, run `scripts/apply_signal_invalid_values.py`. It sets top-level `signal_matrix`, copies each source signal's column-AA `Invalid Value(Hex)` into `timeout_value`, and records `timeout_value_source_sheet` and `timeout_value_source_row`. Blank AA remains blank; missing/ambiguous source matches block output. The target signal is never used for this value, and `DM_FD` is excluded.
-- Compute `timeout_time` from source send type and source cycle time according to `routing-rules.md`; keep source timing evidence in the manifest.
-- Include eligible project-mark and deletion routes according to `routing-rules.md`. Do not include FRZCU, AZ, cycle-message, LIN-message, or `FL_CANFD_DM` target records.
+- Use short CAN network codes in signal output (`CH`, `GL` and so on), not full subnet strings.
+- After resolving signal routes, run `scripts/apply_signal_invalid_values.py`. It sets `signal_matrix`, copies the source signal's column-AA `Invalid Value(Hex)` into `timeout_value`, and records `timeout_value_status` (`present`, `blank`, `missing_signal`, `missing_sheet`), source sheet and source row. Absence leaves the value blank; ambiguous matches block output. The target signal is never used, and `DM_FD` is excluded.
+- Compute `timeout_time` for every retained non-Event signal from its source cycle according to `routing-rules.md`. Pure Event uses mapping-only mode with blank time/value. Keep source timing evidence in the manifest. An approved non-Event exception is stored in `user_decisions.timeout_overrides` as `{ "source_key": ["IC", "ExampleMessage", "ExampleSignal"], "seconds": 1200, "reason": "User-approved exception", "evidence": "Conversation reference" }`; the numeric value is an example, not a default.
+- History manifests require a complete `requirement_review` list and per-route `history_rows`; see `requirement-review.md`. Store exact deferred History rows in `user_decisions.deferred_history_rows`. Preserve approved aliases and conditional project choices there as needed.
+- Project-transition-only route provenance uses `transition_review` entries such as `{ "route_ref": "routes:0", "flzcu_row": 100 }`. Its operation and complete route identity must match the original AX/AY state change. An existing project-transition route does not require a fabricated History association.
+- Matrix enrichment sets `matrix_message_send_type`, `matrix_signal_send_type`, `matrix_message_source_row` and `routing_mode`. Exact source-matrix G `Event` means `routing_mode=MAPPING_ONLY`, `timeout_time=""`, `timeout_value=""`, `timeout_value_status=mapping_only`. A missing cycle is valid for this mode. Other rows use `STANDARD`. This mode remains manifest metadata; the current eleven-column worksheet does not transmit it to an ARXML consumer. Do not use an unsupported consumer to apply mapping-only rows.
+- Include eligible project-mark and deletion routes according to `routing-rules.md`. Do not include FRZCU, AZ, cycle-message, any LIN forwarding, or `FL_CANFD_DM` target records.
 - For OBD CAN, include both request-side and response-side channel/type/length fields and both transport-parameter sets. The request channel is an explicit user input.
 - For OBD ETH rows used as ordinary CAN diagnostic routes, include both request-side and response-side CAN identity, channel/type/length, and transport parameters. `OBD_ETH` is the source sheet marker, not an instruction to omit the request CAN endpoint or infer DoIP. The request channel must be resolved separately; for the user's EEA5.1 Robotaxi workbook it is `DGCAN`.
 - Set BDCAN/DMCAN/DGCAN endpoint settings to Rx `STANDARD_NO_FD_CAN`, Tx `STANDARD_CAN`, Length 8. Set every other CAN endpoint to Rx/Tx `STANDARD_FD_CAN`, Length 64.

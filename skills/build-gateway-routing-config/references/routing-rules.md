@@ -4,7 +4,7 @@
 
 - Process only selected History version groups and `Routing(FLZCU)` rows whose routing type is `Message` or `Signal`.
 - Allow selecting one or more version groups. Apply them in History row order; the latest selected group determines the output suffix.
-- Ignore `Routing(FRZCU)` content, explicit FRZCU text, `Cycle Message Routing`, AZ, and all message routes with LIN at either end. Use AX and AY only according to the selected project mode. Signal routes may contain LIN legs.
+- Ignore `Routing(FRZCU)` content, explicit FRZCU text, `Cycle Message Routing`, AZ, and all message or signal routes with LIN at either end. Use AX and AY only according to the selected project mode. Keep excluded LIN requirements in the review and list them in the conversation.
 - Ignore the target subnet column `FL_CANFD_DM`. Use only `FL_CAN_DM` for DM target routes.
 - Do not generate report files or report sheets.
 
@@ -90,19 +90,19 @@ Target columns:
 | AM | FL_CANFD_SU | SUCAN | yes |
 | AN | FL_CANFD_GL | GLCAN | yes |
 
-Signal-only LIN target columns:
+LIN target columns, used only to identify and disclose exclusions:
 
 | Column | Subnet | Output network | Use |
 |---|---|---|---|
-| AO | FL_LIN_TDL1 | TDL1 | signal only |
-| AP | FL_LIN_TDL2 | TDL2 | signal only |
-| AQ | FL_LIN_RLHS | RLHS | signal only |
-| AR | FL_LIN_EBS | EBS | signal only |
-| AS | FL_LIN_DDSP | DDSP | signal only |
-| AT | FL_LIN_LSMM | LSMM | signal only |
-| AU | FL_LIN_PSMM | PSMM | signal only |
-| AV | FL_LIN_SRF | SRF | signal only |
-| AW | FL_LIN_DLM | DLM | signal only |
+| AO | FL_LIN_TDL1 | TDL1 | excluded |
+| AP | FL_LIN_TDL2 | TDL2 | excluded |
+| AQ | FL_LIN_RLHS | RLHS | excluded |
+| AR | FL_LIN_EBS | EBS | excluded |
+| AS | FL_LIN_DDSP | DDSP | excluded |
+| AT | FL_LIN_LSMM | LSMM | excluded |
+| AU | FL_LIN_PSMM | PSMM | excluded |
+| AV | FL_LIN_SRF | SRF | excluded |
+| AW | FL_LIN_DLM | DLM | excluded |
 
 Source subnet conversion:
 
@@ -153,19 +153,29 @@ Write one target leg per row. If one FLZCU signal row marks three target subnets
 
 Do not use the old `目标网段统计` comma string or horizontally repeated target columns.
 
-Configure timeout only on the source/Rx signal. For both `ADD` and `DELETE`, locate the source-network sheet `FLZCU_VCU_<源网段>` in the customer signal matrix, then match the source message name in column D and source signal name in column L. Copy column AA `Invalid Value(Hex)` to `超时值`. Matching is trimmed and case-insensitive but otherwise exact. Forward-fill merged/blank message-name cells while scanning a message block. A blank AA cell means the source signal has no invalid value and `超时值` remains blank. Missing or multiple source matches are blocking ambiguities; never read the target signal as a fallback. Exclude the `FLZCU_VCU_DM_FD` sheet.
+Configure timeout only on the source/Rx signal. For both `ADD` and `DELETE`, locate the source-network sheet `FLZCU_VCU_<源网段>` in the customer signal matrix, then match the source message name in column D and source signal name in column L. Copy column AA `Invalid Value(Hex)` to `超时值`. Matching is trimmed and case-insensitive but otherwise exact. Forward-fill merged/blank message-name cells while scanning a message block. An empty AA cell, missing source signal or absent source sheet leaves `超时值` blank and records the lookup status. Multiple matches block output. Never read the target signal as a fallback. Exclude the `FLZCU_VCU_DM_FD` sheet. A blank value does not cancel timeout calculation.
 
 Use source send type from FLZCU J and source cycle time from K for `超时时间`; never use target cycle time U.
 
-- If send type does not contain `Cyclic`, leave timeout blank.
-- If cycle time is blank, zero, or invalid, leave timeout blank and report the unresolved timeout input.
+- Identify pure `Event` using G `Msg Send Type` in the source signal matrix, carrying message metadata within its message block. Pure Event is mapping-only: leave timeout time and value blank, even when a cycle or AA invalid value is populated. Do not apply any other parameter changes. AF `Signal Send Type` uses values such as OnWrite or OnChange; do not mistake a cyclic `CE` message for pure Event because its signal type contains an event action.
+- Calculate timeout for the other signal routes, including `Cycle`, `CE`, `Cyclic` and other non-Event send-type spellings, using the source cycle.
+- For non-Event routes, if the source cycle is blank, zero, negative or not finite, report the unresolved input and stop before writing. Pure Event does not require a valid cycle or timeout because it only creates a mapping.
 - If `Cycle <= 20 ms`, timeout is `500 ms`.
 - If `20 ms < Cycle <= 100 ms`, timeout is `Cycle * 20 ms`.
 - If `Cycle > 100 ms`, timeout is `4000 ms`.
 - Store `超时时间` as seconds because it is written directly to AUTOSAR `ComTimeout`: `timeout_ms / 1000`.
 - Keep all rows for the same source key consistent in byte order, timeout value, timeout time, and source combined name.
+- An explicitly confirmed user exception overrides the cycle formula only for its complete source key. Store it in `user_decisions.timeout_overrides` with seconds, reason and conversation evidence. Do not infer an exception from existing workbook values or a workbook note.
+
+## Generated status signals and additional requirement sheets
+
+Rows that define a target `Timeout_Flag` without an ordinary source signal are application requirements, not forwarding routes. The extractor lists them separately even when routing type is blank. Review their destination message, network, bit position and length. Report them as requiring application logic; never invent a source signal or claim that a normal signal mapping implements the flag.
+
+Review a History item that points to an additional worksheet together with that worksheet. Preserve the user's rule that timeout values come from the source matrix; a worksheet saying to delete or change an invalid value does not by itself authorize removing routes or guessing which existing parameter to clear. Resolve the requested field or record its separate implementation disposition explicitly.
 
 ## Matching policy
+
+For multiple distinct sources feeding one target, tell the user and exclude the affected additions. Compare the full applicable routing table, including older routes. For messages the target is CAN channel plus CAN ID; for signals it is target network/message/signal. Do not infer a preferred source. Preserve explicit, evidenced source choices from the user. Record in `user_decisions.excluded_source_rows` the raw `flzcu_row`, `reason` and conversation `evidence` for source rows already ruled out by that user choice. Do not treat all routes of the same message as excluded: CH→SU and CH/SU→IC are different target paths.
 
 Normalize CAN IDs numerically so `0x03` and `0x003` compare equal. Trim names and compare case-insensitively, but preserve original FLZCU spelling in output.
 

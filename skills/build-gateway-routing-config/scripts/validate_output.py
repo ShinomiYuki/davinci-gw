@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
 from openpyxl import load_workbook
 
 from doip_mapping import HEADERS as DOIP_HEADERS, mapping_key, mapping_values, normalize_mapping
+from review_requirements import review_manifest
 
 
 HEADERS = [
@@ -194,13 +196,11 @@ def require_fields(route, fields, row, errors):
 
 
 def computed_timeout_seconds(send_type, cycle_time_ms):
-    if "cyclic" not in comparable(send_type).casefold():
-        return ""
     try:
         cycle = float(cycle_time_ms)
     except (TypeError, ValueError):
         return ""
-    if cycle <= 0:
+    if not math.isfinite(cycle) or cycle <= 0:
         return ""
     if cycle <= 20:
         timeout_ms = 500
@@ -229,7 +229,7 @@ def main():
         for row in range(2, reference_sheet.max_row + 1)
         if comparable(reference_sheet.cell(row=row, column=1).value)
     }
-    errors = []
+    errors = review_manifest(manifest)
     if [doip_sheet.cell(1, column).value for column in range(1, 8)] != list(DOIP_HEADERS):
         errors.append("DoIP_to_CAN 表头与七列契约不一致")
     mappings = manifest.get("doip_can_mappings", [])
@@ -329,10 +329,13 @@ def main():
         if previous != settings:
             errors.append(f"Inconsistent source settings for signal route at output row {index}: {source_key}")
 
-        if "source_send_type" in route or "source_cycle_time_ms" in route:
+        if route.get("routing_mode") != "MAPPING_ONLY" and ("source_send_type" in route or "source_cycle_time_ms" in route):
             expected_timeout = computed_timeout_seconds(
                 route.get("source_send_type"), route.get("source_cycle_time_ms")
             )
+            approved = [entry for entry in manifest.get("user_decisions", {}).get("timeout_overrides", []) if entry.get("source_key") == [comparable(route.get(field)) for field in ("source_network", "source_message_name", "source_signal_name")]]
+            if len(approved) == 1:
+                expected_timeout = comparable(approved[0].get("seconds"))
             if expected_timeout != comparable(route.get("timeout_time")):
                 errors.append(
                     f"Signal route row {index} timeout mismatch: expected {expected_timeout!r}, "
@@ -340,7 +343,8 @@ def main():
                 )
         source_sheet = comparable(route.get("timeout_value_source_sheet"))
         source_row = route.get("timeout_value_source_row")
-        if not source_sheet or not isinstance(source_row, int) or source_row < 2:
+        missing_value = route.get("timeout_value_status") in {"missing_sheet", "missing_signal"} and not comparable(route.get("timeout_value"))
+        if not source_sheet or (not missing_value and (not isinstance(source_row, int) or source_row < 2)):
             errors.append(
                 f"Signal route row {index} lacks valid source-matrix evidence for timeout_value."
             )

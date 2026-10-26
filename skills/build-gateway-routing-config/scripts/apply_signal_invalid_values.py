@@ -51,13 +51,19 @@ def build_signal_index(worksheet):
 
     index = defaultdict(list)
     current_message = ""
+    message_send_type = ""
+    message_row = None
     for row_number, row in enumerate(
-        worksheet.iter_rows(min_row=2, max_col=27, values_only=True),
+        worksheet.iter_rows(min_row=2, max_col=32, values_only=True),
         start=2,
     ):
         message = clean(row[3])
         if message:
             current_message = message
+            message_send_type = clean(row[6])
+            message_row = row_number
+        elif clean(row[6]):
+            message_send_type = clean(row[6])
         signal = clean(row[11])
         if not current_message or not signal:
             continue
@@ -69,6 +75,9 @@ def build_signal_index(worksheet):
                 "message": current_message,
                 "signal": signal,
                 "invalid_value": invalid_value,
+                "message_send_type": message_send_type,
+                "signal_send_type": clean(row[31]),
+                "message_row": message_row,
             }
         )
     return index
@@ -97,26 +106,25 @@ def apply_invalid_values(manifest, matrix_path):
             message = clean(route.get("source_message_name"))
             signal = clean(route.get("source_signal_name"))
             identity = f"{network}/{message}/{signal}"
+            route["routing_mode"] = "STANDARD"
+            route["matrix_message_send_type"] = ""
+            route["matrix_signal_send_type"] = ""
 
             if network in EXCLUDED_NETWORKS:
                 errors.append(f"signal_routes[{position}] {identity} 属于已排除的 DM_FD 网段。")
                 continue
             worksheet = sheets.get(network)
             if worksheet is None:
-                errors.append(
-                    f"signal_routes[{position}] {identity} 找不到源网段工作表 "
-                    f"{SHEET_PREFIX}{network}。"
-                )
+                route.update(timeout_value="", timeout_value_status="missing_sheet", timeout_value_source_sheet=f"{SHEET_PREFIX}{network}", timeout_value_source_row=None)
+                resolved += 1
                 continue
             if network not in indexes:
                 indexes[network] = build_signal_index(worksheet)
             index = indexes[network]
             matches = index.get((message.casefold(), signal.casefold()), [])
             if not matches:
-                errors.append(
-                    f"signal_routes[{position}] {identity} 在源网段工作表 "
-                    f"{worksheet.title!r} 中没有精确匹配。"
-                )
+                route.update(timeout_value="", timeout_value_status="missing_signal", timeout_value_source_sheet=worksheet.title, timeout_value_source_row=None)
+                resolved += 1
                 continue
             if len(matches) > 1:
                 rows = ", ".join(str(match["row"]) for match in matches)
@@ -127,7 +135,20 @@ def apply_invalid_values(manifest, matrix_path):
                 continue
 
             match = matches[0]
+            route["matrix_message_send_type"] = match["message_send_type"]
+            route["matrix_signal_send_type"] = match["signal_send_type"]
+            route["matrix_message_source_row"] = match["message_row"]
+            if match["message_send_type"].casefold() == "event":
+                route["routing_mode"] = "MAPPING_ONLY"
+                route["timeout_time"] = ""
+                route["timeout_value"] = ""
+                route["timeout_value_status"] = "mapping_only"
+                route["timeout_value_source_sheet"] = worksheet.title
+                route["timeout_value_source_row"] = match["row"]
+                resolved += 1
+                continue
             route["timeout_value"] = match["invalid_value"]
+            route["timeout_value_status"] = "present" if match["invalid_value"] else "blank"
             route["timeout_value_source_sheet"] = worksheet.title
             route["timeout_value_source_row"] = match["row"]
             resolved += 1
