@@ -56,4 +56,4 @@ def com_source_name(source_signal: str, source_network: str) -> str:
 
 def com_destination_name(target_signal: str, target_network: str) -> str:
     """返回 ComGwDestination 名称。"""
-    return f"ComGwDestination_{safe_name(target_signal)}_{safe_name(target_network)}"
+    return f"ComGwDestination_to_{safe_name(target_network)}"
