@@ -2,7 +2,7 @@
 name: build-gateway-routing-config
 description: 从原始网关需求生成标准配置表，支持整帧、信号、CAN诊断的ADD/DELETE及DoIP_to_CAN映射。适用于History/FLZCU变更、选定的CAN诊断行，以及明确要求按logicalAddress汇总Tester与CAN请求/响应的DoIP转CAN输入准备；不生成DoIP ARXML配置。
 metadata:
-  version: "1.3.2"
+  version: "1.3.3"
 ---
 
 # Build Gateway Routing Config
@@ -12,6 +12,7 @@ Generate incremental direct-message, signal, or CAN diagnostic route legs with e
 ## Required resources
 
 - Use `assets/网关路由配置表空白模板.xlsx` as the immutable output template.
+- Keep direct-message column P (`目标网段报文Truncation使能`) blank. Neither ordinary direct routes nor CanTp diagnostic routes configure Tx Truncation. Preserve Tx objects unrelated to routing.
 - Read `references/routing-rules.md` before resolving requirements.
 - Read `references/requirement-review.md` for History work. Preserve explicit user decisions from the current or relevant prior conversation before classifying anything as omitted.
 - Requirement review is a local data-completeness check, not code review. Do not invoke native Codex review or review agents for this workflow. Check demand coverage and required parameters only; an absent optional matrix timeout value remains a valid blank.

@@ -136,7 +136,7 @@ def expected_values(route):
         target_channel,
         "",
         "",
-        "Enable",
+        "",
         "IGNORE",
         normalized_operation(route),
     ]

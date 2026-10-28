@@ -41,13 +41,19 @@
 
 1.2.1 修复信号端点因生成名称差异而被误判缺失的问题。ADD 和 DELETE 通过 Com 方向、唯一 PDU、直接信号引用、逻辑网段和原始信号身份核对端点；支持已确认的“信号名＋网段 CAN 及编号”后缀，冲突和歧义仍阻断，真正缺失仍跳过。详见 [1.2.1 变更说明](docs/发布说明_v1.2.1.md)。
 
+1.2.2 取消普通直接路由及 CanTp 诊断路由新建 Tx 的 Truncation 参数，标准表保留 P 列并默认留空；新增既有路由参数清理 Skill，未参与路由的 Tx 保持原样。详见 [1.2.2 变更说明](docs/发布说明_v1.2.2.md)。
+
 1.2.0 读取七列 `DoIP_to_CAN` 映射快照，按 Tester 与 logicalAddress 汇总实际 CAN 目标。先在同一内存事务中应用明确要求的 CAN 诊断变更，再检查完整前置引用；DoIP 表本身不会补建缺失 CAN 端点。前置缺失时默认停止预览，用户明确选择阻断全部或跳过缺失映射后重新预览。已有 DoIP 请求、响应和 RoutingActivation 按真实引用复用；新增主要对象使用 `GWT_`，参数取对应业务的物理或功能基准样例，Queue 参数和 Buffer 引用保持原样。功能请求保留既有 Dcm/LIN 目标。详见 [1.2.0 变更说明](docs/发布说明_v1.2.0.md)。
 
 源信号“超时值”单独写入 Rx `ComRxDataTimeoutSubstitutionValue`，无需同时填写“超时时间”；不修改 Tx 替代值。新增普通 CanIf/EcuC 名称包含模块、报文名、CAN ID、完整通道与方向，已有名称通过引用复用。
 
 当前不支持直接报文 LIN 路由、多 ARXML 合并和 DaVinci GUI 自动操作。诊断参数与边界见 [1.1.0 发布说明](docs/发布说明_v1.1.0.md)，本次修复见 [1.1.4 发布说明](docs/发布说明_v1.1.4.md)。
 
-上游配置表 Skill 的维护源码位于 [skills/build-gateway-routing-config](skills/build-gateway-routing-config/SKILL.md)，以独立标签 `skill-v1.2.0` 发布。空白模板新增七列 `DoIP_to_CAN`，按原始需求中的 logicalAddress、实际 Tester 与 CAN 请求/响应汇总映射，支持按项目打点或明确行号选择范围。工具 1.2.0 执行该页的 DoIP/跨协议 PduR 配置，SoAd 与通信连接由基准提供。模板同时更新“需求描述”并删除三张旧说明页，详情见 [Skill 1.2.0 发布说明](docs/Skill发布说明_v1.2.0.md)。
+上游配置表 Skill 的维护源码位于 [skills/build-gateway-routing-config](skills/build-gateway-routing-config/SKILL.md)，当前 Skill 版本为 1.3.3（历史独立标签为 `skill-v1.2.0`）。普通直接报文路由的 P 列“目标网段报文Truncation使能”默认留空，兼容旧表 Enable/Disable，但不再据此配置。普通路由和 CanTp 诊断路由的新建 Tx 均不写入 `CanIfTxPduTruncation`，复用既有端点时保留现值，不修改未参与路由的 Tx。参数缺省与显式 false 不等价，具体界面状态和默认值以 DaVinci 工程为准。
+
+既有普通直接路由或 CanTp 诊断路由需要删除该参数时，使用 [remove-routed-tx-truncation](skills/remove-routed-tx-truncation/SKILL.md)（1.0.0）。其独立 Python 入口先按真实 CanIf/EcuC/PduR/CanTp 引用预览，再输出新 ARXML；不参与路由或共享业务不明确的目标保留并报告，不覆盖基准。两个 Skill 均随仓库源码分发，可复制完整对应目录到客户端 Skill 目录，无须额外应用服务。
+
+模板的七列 `DoIP_to_CAN` 按原始需求中的 logicalAddress、实际 Tester 与 CAN 请求/响应汇总映射，支持按项目打点或明确行号选择范围。工具 1.2.0 起执行该页的 DoIP/跨协议 PduR 配置，SoAd 与通信连接由基准提供。模板说明见 [Skill 1.2.0 发布说明](docs/Skill发布说明_v1.2.0.md)。
 
 ## Windows 桌面版
 

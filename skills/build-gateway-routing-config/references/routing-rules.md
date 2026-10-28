@@ -129,7 +129,7 @@ Source subnet conversion:
 | 目标网段CAN通道 | target-column channel mapping |
 | 目标网段报文Checksum使能 | blank |
 | 目标网段报文PnFilter使能 | blank |
-| 目标网段报文Truncation使能 | `Enable` |
+| 目标网段报文Truncation使能 | 留空；普通直接报文路由不再配置此参数 |
 | 路由Length Strategy功能选择 | `IGNORE` |
 | 操作类型 | `ADD` or `DELETE` |
 

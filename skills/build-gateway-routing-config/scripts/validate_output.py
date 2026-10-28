@@ -116,7 +116,7 @@ def expected_row(route):
         target_channel,
         None,
         None,
-        "Enable",
+        None,
         "IGNORE",
         operation(route),
     ]

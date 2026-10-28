@@ -36,7 +36,7 @@ DIRECT_IDENTITY_FIELDS = (
 DIRECT_ADD_REQUIRED_FIELDS = DIRECT_IDENTITY_FIELDS + (
     "源网段报文Length", "源网段报文类型", "源网段RxIndicationUL",
     "源网段报文Dlc Check使能", "目标网段报文Length", "目标网段报文类型",
-    "目标网段报文Truncation使能", "路由Length Strategy功能选择",
+    "路由Length Strategy功能选择",
 )
 SIGNAL_IDENTITY_FIELDS = (
     "源网段", "源报文名", "源信号名", "目标网段", "目标报文名", "目标信号名",

@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 import zipfile
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ sys.path.insert(0, str(SKILL / "scripts"))
 from doip_mapping import HEADERS, normalize_mapping
 from extract_doip_can_mappings import extract_mappings
 from write_gateway_config import write_workbook, worksheet_path
+from validate_output import expected_row
 
 TEMPLATE = SKILL / "assets" / "网关路由配置表空白模板.xlsx"
 CHANNELS = {"PTCAN", "DGCAN", "DMCAN"}
@@ -168,3 +170,30 @@ def test_writer_rejects_duplicates_before_output(tmp_path):
     with pytest.raises(ValueError, match="重复"):
         write_workbook(TEMPLATE, output, [], [], [], [record(), record()])
     assert not output.exists()
+
+
+def test_direct_writer_keeps_truncation_blank_and_validation_extensions(tmp_path):
+    route = {"source_message_name": "SRC", "source_can_id": "0x100", "source_length": 8,
+             "source_channel": "PTCAN", "target_message_name": "DST", "target_can_id": "0x200",
+             "target_length": 64, "target_channel": "DKCAN", "operation": "ADD"}
+    output = tmp_path / "直接路由_v1.0.xlsx"
+    write_workbook(TEMPLATE, output, [route], [], [])
+    with closing(load_workbook(output, read_only=True)) as workbook:
+        actual = [cell.value for cell in workbook["直接报文路由"][2]]
+        assert actual == expected_row(route)
+        assert actual[15] is None
+        assert actual[7] == "Enable"  # 源 Dlc Check 策略保持不变。
+    with closing(load_workbook(TEMPLATE, read_only=True)) as workbook:
+        assert all(row[0] is None for row in workbook["直接报文路由"].iter_rows(min_row=2, min_col=16, max_col=16, values_only=True))
+        descriptions = [str(value) for row in workbook["需求描述"].iter_rows(values_only=True) for value in row if value]
+        assert "整帧列留空；普通路由和 CanTp 诊断路由均不写入该参数。未参与路由的 Tx 保持原样。" in descriptions
+    with zipfile.ZipFile(TEMPLATE) as source, zipfile.ZipFile(output) as target:
+        from lxml import etree
+        sheet_path = worksheet_path(source, "直接报文路由")
+        before = etree.fromstring(source.read(sheet_path))
+        after = etree.fromstring(target.read(sheet_path))
+        ns = {"s": before.nsmap[None]}
+        for tag in ("dataValidations", "extLst", "cols", "sheetViews"):
+            original = before.find(f"s:{tag}", ns)
+            updated = after.find(f"s:{tag}", ns)
+            assert (etree.tostring(original, method="c14n", exclusive=True) if original is not None else None) == (etree.tostring(updated, method="c14n", exclusive=True) if updated is not None else None)

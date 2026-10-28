@@ -72,7 +72,6 @@ class CanIfEditor:
             )),
             (defs.CANIF_TX_READ_NOTIFY, "false"),
             (defs.CANIF_TX_TYPE, "STATIC"),
-            (defs.CANIF_TX_TRUNCATION, enabled(route.target_truncation_enabled)),
         )
         return MutationOperation(
             MutationKind.CANIF_TX_PDU, self.tx_parent_path, short_name, defs.CANIF_TX,

@@ -357,7 +357,6 @@ class DirectRouteSemanticLocator:
             defs.CANIF_TX_CONFIRM_UL: "NONE",
             defs.CANIF_TX_READ_NOTIFY: "false",
             defs.CANIF_TX_TYPE: "STATIC",
-            defs.CANIF_TX_TRUNCATION: enabled(route.target_truncation_enabled),
         }
         for canif in self.index.find_by_definition_ref(defs.CANIF_TX):
             name = direct_child_text(canif, self.namespace, "SHORT-NAME")
@@ -542,7 +541,7 @@ class DirectRouteSemanticLocator:
         )
         target_key = (
             route.key.target_message_name, route.key.target_can_id, route.key.target_channel,
-            route.target_length, route.target_message_type, route.target_truncation_enabled,
+            route.target_length, route.target_message_type,
             buffer_path,
         )
         source = self._source_cache.get(source_key)

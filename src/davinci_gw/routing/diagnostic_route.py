@@ -109,8 +109,9 @@ class DiagnosticRoutePlanner:
         expected = {
             (d.CANIF_RX_INDICATION_UL if rx else d.CANIF_TX_CONFIRM_UL): "CAN_TP",
             (d.CANIF_RX_INDICATION_NAME if rx else d.CANIF_TX_CONFIRM_NAME): "CanTp_RxIndication" if rx else "CanTp_TxConfirmation",
-            (d.CANIF_RX_DLC_CHECK if rx else d.CANIF_TX_TRUNCATION): "false" if rx else "true",
         }
+        if rx:
+            expected[d.CANIF_RX_DLC_CHECK] = "false"
         for key, value in expected.items():
             if self.values(node)[0].get(key) != (value,):
                 raise DiagnosticConflict(f"已有 CanIf 属性冲突，保留基线：{self.path(node)} 的 {key} 应为 {value}。")
@@ -384,12 +385,12 @@ class DiagnosticRoutePlanner:
                 (d.CANIF_RX_DLC if rx else d.CANIF_TX_DLC): str(length),
                 (d.CANIF_RX_INDICATION_NAME if rx else d.CANIF_TX_CONFIRM_NAME): "CanTp_RxIndication" if rx else "CanTp_TxConfirmation",
                 (d.CANIF_RX_INDICATION_UL if rx else d.CANIF_TX_CONFIRM_UL): "CAN_TP",
-                (d.CANIF_RX_DLC_CHECK if rx else d.CANIF_TX_TRUNCATION): "false" if rx else "true",
                 (d.CANIF_RX_HANDLE if rx else d.CANIF_TX_HANDLE): str((self.canif.rx_handles if rx else self.canif.tx_handles).allocate()),
                 (d.CANIF_RX_TYPE if rx else d.CANIF_TX_TYPE): "STATIC",
                 (d.CANIF_RX_READ_NOTIFY if rx else d.CANIF_TX_READ_NOTIFY): "false",
             }
             if rx:
+                parameters[d.CANIF_RX_DLC_CHECK] = "false"
                 parameters[d.CANIF_RX_READ_DATA] = "false"
             objects.append(self.create(MutationKind.CANIF_RX_PDU if rx else MutationKind.CANIF_TX_PDU,
                 self.canif.rx_parent_path if rx else self.canif.tx_parent_path,

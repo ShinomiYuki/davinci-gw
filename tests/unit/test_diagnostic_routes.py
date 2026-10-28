@@ -224,6 +224,25 @@ def test_complete_reference_chain_is_idempotent_despite_misleading_names(diagnos
     assert not plan.operations
 
 
+@pytest.mark.parametrize("truncation", [None, "true", "false"])
+def test_routed_diagnostic_tx_truncation_is_not_an_identity_field(diagnostic_case, truncation):
+    document, workbook, _, _ = diagnostic_case
+    index = document.build_index()
+    ns = document.namespace
+    for tx in index.find_by_definition_ref(d.CANIF_TX):
+        if semantic_values(tx, ns)[0].get(d.CANIF_TX_CONFIRM_UL) != ("CAN_TP",):
+            continue
+        for entry in tuple(tx.find(f"{{{ns}}}PARAMETER-VALUES")):
+            if entry.findtext(f"{{{ns}}}DEFINITION-REF") == d.CANIF_TX_TRUNCATION:
+                if truncation is None:
+                    entry.getparent().remove(entry)
+                else:
+                    entry.find(f"{{{ns}}}VALUE").text = truncation
+    plan = TransactionCoordinator(document, workbook).plan_and_apply()
+    assert not plan.errors, plan.issues
+    assert plan.diagnostic_existing_count == 1 and not plan.operations
+
+
 def test_can_route_from_obd_eth_sheet_adds_bidirectional_pdur(diagnostic_case):
     document, workbook, _, _ = diagnostic_case
     original = workbook.diagnostic_routes[0]
@@ -236,7 +255,16 @@ def test_can_route_from_obd_eth_sheet_adds_bidirectional_pdur(diagnostic_case):
     assert sum(op.definition_ref == d.PDUR_PATH for op in plan.operations) == 2
     assert sum(op.definition_ref == d.PDUR_DEST for op in plan.operations) == 2
     assert sum(op.definition_ref == d.PDUR_QUEUE for op in plan.operations) == 2
+    tx_operations = [op for op in plan.operations if op.definition_ref == d.CANIF_TX]
+    assert len(tx_operations) == 2
+    assert all(d.CANIF_TX_TRUNCATION not in dict(op.parameters) for op in tx_operations)
+    for name in ("FrameSRC_CANTx", "FrameDST_CANTx", "ExistingTx"):
+        tx = document.build_index().find_by_short_name(name)[0]
+        assert semantic_values(tx, document.namespace)[0][d.CANIF_TX_TRUNCATION] == ("true",)
     validate_generated_output(document, plan)
+    repeated = TransactionCoordinator(document, replace(workbook, diagnostic_routes=(route,))).plan_and_apply()
+    assert not repeated.errors, repeated.issues
+    assert not repeated.operations and repeated.diagnostic_existing_count == 1
 
 
 def test_new_pdur_destination_avoids_existing_symbolic_name(diagnostic_case):

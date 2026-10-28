@@ -39,7 +39,7 @@ def direct_row(**changes: object) -> dict[str, object]:
         "目标网段报文名称": "DST_MSG", "目标网段报文CANID": 0x200,
         "目标网段报文Length": 8, "目标网段报文类型": "STANDARD_FD_CAN",
         "目标网段CAN通道": "DST_CAN", "目标网段报文Checksum使能": None,
-        "目标网段报文PnFilter使能": None, "目标网段报文Truncation使能": "Enable",
+        "目标网段报文PnFilter使能": None, "目标网段报文Truncation使能": None,
         "路由Length Strategy功能选择": "IGNORE", "操作类型": "ADD",
     }
     row.update(changes)

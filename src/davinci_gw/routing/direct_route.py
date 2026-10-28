@@ -175,11 +175,11 @@ class DirectRoutePlanner:
                 f"目标报文类型“{route.target_message_type}”当前无法安全映射，已跳过该路由腿。",
                 warning=True,
             )
-        if (route.target_truncation_enabled or "").upper() not in SUPPORTED_SWITCHES:
+        if route.target_truncation_enabled and route.target_truncation_enabled.upper() not in SUPPORTED_SWITCHES:
             return _issue(
                 self.workbook, route, "DIRECT_TARGET_SWITCH_SKIPPED",
                 f"目标端Truncation值“{route.target_truncation_enabled}”不支持，已跳过该路由腿；"
-                "请使用Enable或Disable。", warning=True,
+                "请留空；旧表中的Enable或Disable兼容读取，但不再配置该参数。", warning=True,
             )
         strategy = (route.length_strategy or "").upper()
         if strategy not in SUPPORTED_LENGTH_STRATEGIES:

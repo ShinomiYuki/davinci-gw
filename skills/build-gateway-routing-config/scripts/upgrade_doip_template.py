@@ -22,7 +22,7 @@ SECTIONS = [
         ("源网段报文CANID / 报文类型", "分别写入 CanIfRxPduCanId / CanIfRxPduCanIdType。", "目标网段报文CANID / 报文类型", "分别写入 CanIfTxPduCanId / CanIfTxPduCanIdType。", "Handle ID", "Rx、Tx 分别在定义作用域内分配未占用 ID；不写零等待 DaVinci 修复。"),
         ("源网段报文Length", "写入 CanIfRxPduDlc，并与底层 EcuC PduLength 一致。", "目标网段报文Length", "写入 CanIfTxPduDlc，并与底层 EcuC PduLength 一致。", "硬件引用", "引用数据的 CanIfHrh名称 / CanIfTxBuffer名称解析到已有硬件；不新建或删除硬件。缺依赖时警告并跳过 ADD。"),
         ("源网段RxIndicationUL", "普通整帧按字段写 UL，回调为 PduR_CanIfRxIndication；CAN 诊断固定 CAN_TP / CanTp_RxIndication。", "TxConfirmation", "普通整帧固定 NONE / NULL_PTR；CAN 诊断固定 CAN_TP / CanTp_TxConfirmation。", "CAN 诊断类型 / 长度", "BDCAN、DMCAN、DGCAN：Rx NO_FD、Tx STANDARD_CAN、8 字节；其他网段：Rx/Tx FD、64 字节。"),
-        ("源网段报文Dlc Check使能", "整帧 Enable→true、Disable→false；CAN 诊断固定 false。", "目标网段报文Truncation使能", "整帧按使能字段写入；CAN 诊断固定 true。", "Checksum / PnFilter", "整帧页保存输入字段，当前不据此新增对应 ARXML 参数。"),
+        ("源网段报文Dlc Check使能", "整帧 Enable→true、Disable→false；CAN 诊断固定 false。", "目标网段报文Truncation使能", "整帧列留空；普通路由和 CanTp 诊断路由均不写入该参数。未参与路由的 Tx 保持原样。", "Checksum / PnFilter", "整帧页保存输入字段，当前不据此新增对应 ARXML 参数。"),
         ("Rx Pdu Ref", "引用底层 EcuC PDU；CanTp 的 Rx NPdu / Tx FC 引用此底层 PDU。", "Tx Pdu Ref", "引用底层 EcuC PDU；CanTp 的 Tx NPdu / Rx FC 引用此底层 PDU。", "其他固定值", "新建类型 STATIC、ReadNotify=false；Rx ReadData=false。未由当前逻辑创建的参数不自行补默认值。"),
     ]),
     ("Com", "源端字段", "源端配置与处理", "目标端字段", "目标端配置与处理", "共同规则", "共同配置与处理", [
