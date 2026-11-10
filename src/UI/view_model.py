@@ -59,6 +59,7 @@ class GatewayViewModel(QObject):
         self.progress_percent = 0
         self.progress_cancellable = False
         self.cancelling = False
+        self.pending_confirmations = 0
         self._operation_started_at: float | None = None
 
         runner.progress.connect(self._on_progress)
@@ -76,7 +77,20 @@ class GatewayViewModel(QObject):
             self.state,
             inputs_valid=self.inputs_valid,
             cancellable=self.progress_cancellable and not self.cancelling,
+            confirmed=self.pending_confirmations == 0,
         )
+
+    def set_pending_confirmations(self, count: int) -> None:
+        """更新仍需人工确认的警告与保留决定数量。
+
+        该数量是生成门禁的唯一来源：按钮与快捷键都走同一套规则，
+        未确认时不允许生成。
+        """
+        count = max(0, int(count))
+        if count == self.pending_confirmations:
+            return
+        self.pending_confirmations = count
+        self.changed.emit()
 
     @staticmethod
     def _valid_file(path: str, suffix: str) -> bool:
@@ -173,7 +187,18 @@ class GatewayViewModel(QObject):
         self.start_preview()
 
     def start_generate(self) -> None:
-        if not self.controls.generate_enabled or not self.session_id:
+        if not self.session_id:
+            return
+        if self.pending_confirmations:
+            # 人工确认是硬门禁：按钮与快捷键都必须被同一处拦截。
+            self.stage_name = (
+                f"还有 {self.pending_confirmations} 项警告或保留决定未确认，"
+                "请在问题清单中逐项确认后再生成"
+            )
+            LOGGER.warning("生成被拦截：仍有 %s 项待确认", self.pending_confirmations)
+            self.changed.emit()
+            return
+        if not self.controls.generate_enabled:
             return
         error = validate_output_path(self.output_path, self.baseline_path)
         if error:
@@ -234,7 +259,9 @@ class GatewayViewModel(QObject):
             self.state = GuiState.PREVIEW_VALID
             self.stage_name = "预览通过，可以生成"
             if not self.output_manually_edited:
-                self.output_path = suggest_output_path(self.baseline_path, self.target_version)
+                suggested = suggest_output_path(self.baseline_path, self.target_version)
+                if suggested:
+                    self.output_path = suggested
         elif result.status is OperationStatus.CANCELLED:
             self.state = GuiState.CANCELLED
             self.stage_name = "预览已取消"

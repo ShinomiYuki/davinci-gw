@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication
 from . import __version__
 from .logging_config import configure_logging
 from .main_window import MainWindow
-from .styles import APP_STYLE
+from .styles import apply_theme, detect_system_theme
 from .task_runner import QtTaskRunner
 from .view_model import GatewayViewModel
 
@@ -25,7 +25,8 @@ def main() -> int:
     configure_logging()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    app.setStyleSheet(APP_STYLE)
+    # 先跟随系统主题，主窗口会再按用户已保存的选择覆盖。
+    apply_theme(app, detect_system_theme())
     runner = QtTaskRunner()
     view_model = GatewayViewModel(runner)
     window = MainWindow(view_model)

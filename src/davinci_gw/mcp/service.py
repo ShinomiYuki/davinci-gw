@@ -5,17 +5,33 @@ from __future__ import annotations
 import logging
 from collections import OrderedDict
 from threading import RLock
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from davinci_gw.application import GatewayFacade
 from davinci_gw.contracts import OperationStatus, ProgressEventDto, UpdateRequestDto
 from davinci_gw.mcp.mapping import dto_envelope, envelope, issue
-from davinci_gw.mcp.paths import PathPolicyError, validate_input_file, validate_new_output
+from davinci_gw.mcp.paths import (
+    PathPolicyError,
+    validate_input_file,
+    validate_local_python,
+    validate_local_repository,
+    validate_new_output,
+)
 from davinci_gw.mcp.runtime import BoundedFacadeRuntime
-from davinci_gw.mcp.repair_service import RepairContractError, RepairCoordinator
+from davinci_gw.mcp.repair_contract import (
+    CANCEL_CONFIRMATION,
+    START_CONFIRMATION,
+    SUBMIT_CONFIRMATION,
+    SUBMIT_MODES,
+)
+from davinci_gw.mcp.repair_models import RepairContractError
 from davinci_gw.mcp.version import MCP_VERSION, load_build_info
 
 LOGGER = logging.getLogger("davinci_gw.mcp.service")
+
+if TYPE_CHECKING:  # pragma: no cover - 仅供类型检查
+    from davinci_gw.mcp.repair_service import RepairCoordinator
 
 
 class _ProgressLogObserver:
@@ -36,7 +52,7 @@ class GatewayMcpService:
         *,
         facade: GatewayFacade | None = None,
         runtime: BoundedFacadeRuntime | None = None,
-        repairs: RepairCoordinator | None = None,
+        repairs: "RepairCoordinator | None" = None,
     ) -> None:
         self.facade = facade or GatewayFacade()
         self.runtime = runtime or BoundedFacadeRuntime()
@@ -45,7 +61,27 @@ class GatewayMcpService:
         self._prepared_baselines: OrderedDict[str, str] = OrderedDict()
         self._lock = RLock()
         self._observer = _ProgressLogObserver()
-        self.repairs = repairs or RepairCoordinator(facade=self.facade)
+        self._repairs = repairs
+        self._repairs_lock = RLock()
+
+    @property
+    def repairs(self) -> "RepairCoordinator":
+        """按需创建修复协调器。
+
+        协调器依赖 Codex SDK，只在真正使用自动修复时才导入；
+        只使用生成流程的部署（例如桥接服务）因此不必安装 Codex 依赖。
+        """
+        if self._repairs is None:
+            with self._repairs_lock:
+                if self._repairs is None:
+                    from davinci_gw.mcp.repair_service import RepairCoordinator
+
+                    # 协调器用自己的 facade：诊断的预览会建立一条 Prepared
+                    # Session，若与用户共用同一个存储，一次诊断就会把用户
+                    # 最早的一条会话挤出容量上限，那条 preparation_id 随即
+                    # 失效。诊断会话用完即弃，不该占用用户的额度。
+                    self._repairs = RepairCoordinator(runtime=self.runtime)
+        return self._repairs
 
     @staticmethod
     def _path_failure(tool: str, exc: PathPolicyError) -> dict[str, object]:
@@ -98,8 +134,10 @@ class GatewayMcpService:
                     "prepared_session_ttl_seconds": self._capabilities.session_ttl_seconds,
                     "prepared_session_capacity": self._capabilities.session_capacity,
                     "repair_requires_source_repository": True,
-                    "repair_start_confirmation": "确认开始工具BUG自动修复",
-                    "repair_submit_confirmation": "确认提交工具BUG修复",
+                    "repair_start_confirmation": START_CONFIRMATION,
+                    "repair_submit_confirmation": SUBMIT_CONFIRMATION,
+                    "repair_cancel_confirmation": CANCEL_CONFIRMATION,
+                    "repair_submit_modes": list(SUBMIT_MODES),
                     "repair_recursive_start_allowed": False,
                 },
             )
@@ -237,8 +275,15 @@ class GatewayMcpService:
         """稳定复现并分类；诊断阶段不创建分支、不写工程文件。"""
         tool = "diagnose_generation_failure"
         try:
+            # 修复类工具的路径参数与生成类工具同口径：只认带盘符的本地路径。
+            # python_path 随后会被真正执行，repository_path 会被写入分支，
+            # 两者都不能落在 UNC、设备路径或网络共享上。
+            config = validate_input_file(config_path, "config_path", ".xlsx")
+            baseline = validate_input_file(baseline_path, "baseline_path", ".arxml")
+            repository = validate_local_repository(repository_path, "repository_path")
+            python = validate_local_python(python_path, "python_path")
             record = await self.repairs.diagnose(
-                config_path, baseline_path, repository_path, python_path,
+                config, baseline, repository, python,
             )
             payload = record.to_payload()
             payload.pop("summary", None)
@@ -246,6 +291,8 @@ class GatewayMcpService:
                 tool, status=OperationStatus.SUCCESS.value, operation_id=str(uuid4()),
                 summary=record.summary, **payload, issues=list(record.issues),
             )
+        except PathPolicyError as exc:
+            return self._path_failure(tool, exc)
         except RepairContractError as exc:
             return self._repair_contract_failure(tool, exc)
         except Exception as exc:
@@ -333,5 +380,6 @@ class GatewayMcpService:
             self._prepared_baselines.clear()
         for session_id in session_ids:
             self.facade.discard_prepared(session_id)
-        await self.repairs.close()
+        if self._repairs is not None:
+            await self._repairs.close()
         await self.runtime.close()

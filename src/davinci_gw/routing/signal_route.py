@@ -22,7 +22,12 @@ from davinci_gw.modules import definitions as defs
 from davinci_gw.modules.com_editor import ComEditor
 from davinci_gw.modules.common import definition_ref, semantic_values
 
-from .naming import com_destination_name, com_mapping_name, com_source_name
+from .naming import (
+    com_destination_name,
+    com_mapping_name,
+    com_source_name,
+    unique_destination_name,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +120,21 @@ class SignalRoutePlanner:
                 warning=state != "REFERENCE_CONFLICT",
             )
         return ipdu, signal_node, None
+
+    def _destination_names(self, mapping: etree._Element | None) -> set[str]:
+        """返回一条 Mapping 内已存在的 Destination 名，用于避免重名。"""
+        if mapping is None:
+            return set()
+        namespace = self.com.document.namespace
+        group = mapping.find(qualified(namespace, "SUB-CONTAINERS"))
+        names: set[str] = set()
+        for child in list(group) if group is not None else []:
+            if definition_ref(child, namespace) != defs.COM_GW_DEST:
+                continue
+            name = direct_child_text(child, namespace, "SHORT-NAME")
+            if name:
+                names.add(name)
+        return names
 
     def _source_child(
         self, mapping: etree._Element, signal_path: str,
@@ -246,6 +266,9 @@ class SignalRoutePlanner:
 
             group_added = group_existing = 0
             active_targets: list[tuple[SignalRouteChange, str]] = []
+            # 同一 Mapping 下可以有多个目标信号；Destination 名必须互不相同，
+            # 否则同一父容器里会出现重名对象，预检会以「重复名称」阻断生成。
+            used_names = self._destination_names(mapping_node)
             for target, target_path in valid_targets:
                 if not mapping_new and mapping_node is not None:
                     destination_state, _ = self.com.find_destination_by_signal(mapping_node, target_path)
@@ -262,7 +285,10 @@ class SignalRoutePlanner:
                         continue
                 destination = self.com.destination_operation(
                     mapping_path,
-                    com_destination_name(target.key.target_signal_name, target.key.target_network),
+                    unique_destination_name(
+                        com_destination_name(target.key.target_signal_name, target.key.target_network),
+                        used_names,
+                    ),
                     target_path, (target.source,),
                 )
                 state = "MISSING" if mapping_new else self.com.inspect(destination)

@@ -19,7 +19,7 @@
 
 ```powershell
 .\scripts\setup.ps1 -Client DeepSeekHarness -Check
-.\scripts\setup.ps1 -Client DeepSeekHarness -PackageRoot 'D:\Downloads\davinci-gw-mcp-1.1.5-win-x64'
+.\scripts\setup.ps1 -Client DeepSeekHarness -PackageRoot 'D:\Downloads\davinci-gw-mcp-<版本>-win-x64'
 ```
 
 `-Check` 不下载或修改配置。网络受限时使用既有代理，或从 GitHub Release 下载 ZIP 后解压并指定 `-PackageRoot`。需要 PowerShell 7 时安装后再执行；脚本不修改系统执行策略。若系统执行策略阻止脚本，可在本次进程使用 `pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1 -Client DeepSeekHarness`。

@@ -30,12 +30,22 @@ class ControlState:
     cancel_enabled: bool
 
 
-def controls_for(state: GuiState, *, inputs_valid: bool, cancellable: bool) -> ControlState:
-    """返回给定状态下的唯一控件规则。"""
+def controls_for(
+    state: GuiState,
+    *,
+    inputs_valid: bool,
+    cancellable: bool,
+    confirmed: bool = True,
+) -> ControlState:
+    """返回给定状态下的唯一控件规则。
+
+    ``confirmed`` 表示警告与保留决定是否已被人工确认；未确认时禁止生成，
+    按钮与快捷键都必须遵守同一条规则。
+    """
     busy = state in {GuiState.PREPARING, GuiState.GENERATING}
     return ControlState(
         inputs_enabled=not busy,
         preview_enabled=inputs_valid and not busy,
-        generate_enabled=state is GuiState.PREVIEW_VALID,
+        generate_enabled=state is GuiState.PREVIEW_VALID and confirmed,
         cancel_enabled=busy and cancellable,
     )

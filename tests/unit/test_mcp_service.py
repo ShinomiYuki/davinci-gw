@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -16,6 +17,12 @@ from davinci_gw.application import GatewayFacade
 from davinci_gw.application.sessions import PreparedSessionStore
 from davinci_gw.mcp.mapping import MAX_ISSUES, envelope, issue
 from davinci_gw.mcp.paths import PathPolicyError, validate_input_file, validate_new_output
+from davinci_gw.mcp.repair_contract import (
+    CANCEL_CONFIRMATION,
+    START_CONFIRMATION,
+    SUBMIT_CONFIRMATION,
+    SUBMIT_MODES,
+)
 from davinci_gw.mcp.runtime import BoundedFacadeRuntime
 from davinci_gw.mcp.server import SERVER_INSTRUCTIONS, build_server
 from davinci_gw.mcp.service import GatewayMcpService
@@ -37,6 +44,27 @@ class _DiagnosisRepairs:
 
     async def close(self) -> None:
         return None
+
+
+def test_repair_contract_is_published_in_capabilities_and_tool_descriptions() -> None:
+    """三条确认语与提交模式必须公开，客户端不能靠报错文本反推。"""
+    service = GatewayMcpService()
+    policies = service.get_gateway_capabilities()["policies"]
+    assert policies["repair_start_confirmation"] == START_CONFIRMATION
+    assert policies["repair_submit_confirmation"] == SUBMIT_CONFIRMATION
+    assert policies["repair_cancel_confirmation"] == CANCEL_CONFIRMATION
+    assert tuple(policies["repair_submit_modes"]) == SUBMIT_MODES
+
+    async def scenario() -> None:
+        tools = await build_server(service).list_tools()
+        descriptions = {tool.name: tool.description for tool in tools}
+        assert START_CONFIRMATION in descriptions["start_bug_repair"]
+        assert SUBMIT_CONFIRMATION in descriptions["submit_bug_repair"]
+        assert CANCEL_CONFIRMATION in descriptions["cancel_bug_repair"]
+        for mode in SUBMIT_MODES:
+            assert mode in descriptions["submit_bug_repair"]
+
+    asyncio.run(scenario())
 
 
 def test_mcp_adapter_has_no_internal_arxml_cli_or_network_dependencies() -> None:
@@ -94,6 +122,27 @@ def test_output_policy_resolves_directory_link_alias(
     assert aliased.value.code == "BASELINE_OVERWRITE_FORBIDDEN"
 
 
+def test_output_policy_treats_a_dangling_link_as_an_occupied_name(
+    arxml_factory: object, tmp_path: Path,
+) -> None:
+    """悬空的符号链接：名字已被占住，前置检查必须与写文件时同一口径。
+
+    ``Path.exists()`` 跟随符号链接，悬空链接在它看来「不存在」；但真正
+    写文件时按「名字被占用」判定会被拒绝。两层口径不一致的话，用户会
+    收到「已存在」却看不到文件。
+    """
+    baseline = arxml_factory()  # type: ignore[operator]
+    dangling = tmp_path / "dangling.arxml"
+    try:
+        dangling.symlink_to(tmp_path / "missing-target.arxml")
+    except OSError:
+        pytest.skip("当前 Windows 权限不允许创建文件符号链接")
+    assert not dangling.exists()
+    with pytest.raises(PathPolicyError) as occupied:
+        validate_new_output(str(dangling), str(baseline))
+    assert occupied.value.code == "OUTPUT_EXISTS"
+
+
 def test_issue_envelope_is_error_first_and_bounded() -> None:
     issues = [
         {**issue(f"W{index}", "warning"), "severity": "WARNING"}
@@ -143,11 +192,22 @@ def test_server_registers_exact_tools_and_safety_annotations() -> None:
     asyncio.run(list_only())
 
 
-def test_diagnosis_result_keeps_summary_without_adapter_failure() -> None:
+def test_diagnosis_result_keeps_summary_without_adapter_failure(tmp_path: Path) -> None:
+    """诊断工具先按本地路径策略校验四个路径参数，再交给协调器。"""
+    config = tmp_path / "routes.xlsx"
+    baseline = tmp_path / "baseline.arxml"
+    config.write_bytes(b"xlsx")
+    baseline.write_text("<AUTOSAR/>", encoding="utf-8")
+    repository = tmp_path / "repo"
+    (repository / ".git").mkdir(parents=True)
+    (repository / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+
     async def scenario() -> None:
         service = GatewayMcpService(repairs=_DiagnosisRepairs())  # type: ignore[arg-type]
         try:
-            result = await service.diagnose_generation_failure("a", "b", "c", "d")
+            result = await service.diagnose_generation_failure(
+                str(config), str(baseline), str(repository), sys.executable,
+            )
             assert result["status"] == "SUCCESS"
             assert result["summary"] == "已确认属于工具 BUG"
             assert result["classification"] == "TOOL_BUG"

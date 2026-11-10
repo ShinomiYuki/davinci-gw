@@ -342,6 +342,14 @@ class DirectRoutePlanner:
                     ))
                     skipped += len(prepared_targets)
                     continue
+                if source_resolution.skipped_endpoints:
+                    issues.append(_issue(
+                        self.workbook, route, "DIRECT_SOURCE_SHARED_CAN_ID_ENDPOINT",
+                        f"同一通道与 CAN ID 上还存在报文名不同的接收端点"
+                        f"{list(source_resolution.skipped_endpoints)}；"
+                        "本次按配置表报文名新建源端点，请确认报文名与通道填写正确。",
+                        warning=True,
+                    ))
                 source_path = pdur_path.object_path
                 source_operations.extend((
                     ecuc_source,

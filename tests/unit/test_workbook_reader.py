@@ -210,6 +210,14 @@ def test_filename_without_version_is_rejected(workbook_factory: object) -> None:
     assert "*_vX.x.xlsx" in messages(result)
 
 
+def test_filename_version_range_uses_the_upper_bound(workbook_factory: object) -> None:
+    """客户常见的 *_v4.83-4.85.xlsx 区间文件按上限版本处理并提示人工确认。"""
+    result = read_workbook(workbook_factory(filename="AX-网关配置_v4.83-4.85.xlsx"))
+    assert result.is_valid
+    assert result.data.target_version == "4.85"
+    assert any(issue.code == "WORKBOOK_VERSION_RANGE" for issue in result.issues)
+
+
 def test_version_sheet_is_not_target_version(workbook_factory: object) -> None:
     result = read_workbook(workbook_factory(filename="gateway.xlsx"))
     assert result.data.target_version is None

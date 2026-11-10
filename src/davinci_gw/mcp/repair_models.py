@@ -14,6 +14,14 @@ def utc_now_text() -> str:
     return datetime.now(UTC).isoformat()
 
 
+class RepairContractError(ValueError):
+    """可直接返回给用户的修复流程契约错误。
+
+    定义在无外部依赖的模型模块中，便于只使用生成流程的部署
+    在不安装 Codex 依赖的情况下复用同一套错误语义。
+    """
+
+
 class FailureKind(str, Enum):
     """生成问题的稳定分类；不确定时禁止猜成工具 BUG。"""
 

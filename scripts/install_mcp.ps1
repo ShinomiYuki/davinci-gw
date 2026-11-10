@@ -65,6 +65,7 @@ $targetExe = Join-Path $runtimeDirectory "davinci-gw-mcp.exe"
 $manifestPath = Join-Path $installDirectory "install-manifest.json"
 $configPath = Join-Path $codexDirectory "config.toml"
 $managedRuntimes = @()
+$managedClientConfigs = [ordered]@{}
 if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
     try { $previousManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json } catch {
         throw "已有安装清单无法解析，拒绝覆盖"
@@ -86,6 +87,15 @@ if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
         $managedPath = [IO.Path]::GetFullPath([string]$managed.runtime_directory)
         if (-not $managedPath.StartsWith($versionsRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
             throw "已有安装清单的运行目录越出 versions，拒绝升级"
+        }
+    }
+    # 累计历史上写过配置块的客户端：升级不能把旧客户端的托管块丢掉，
+    # 否则卸载时那份配置会残留并指向被替换掉的 EXE。
+    foreach ($pair in @(@('codex_config', 'Codex'), @('dsh_config', 'DeepSeekHarness'))) {
+        $property = $pair[0]
+        $clientName = $pair[1]
+        if ($previousManifest.PSObject.Properties.Name -contains $property -and $previousManifest.$property) {
+            $managedClientConfigs[$clientName] = [string]$previousManifest.$property
         }
     }
 }
@@ -147,12 +157,17 @@ $currentRuntime = [pscustomobject]@{
 $retainedRuntimes = @($managedRuntimes | Where-Object {
     [IO.Path]::GetFullPath([string]$_.runtime_directory) -ne $runtimeDirectory
 })
+if ($effectiveClient -eq 'Codex' -or $effectiveClient -eq 'DeepSeekHarness') {
+    $managedClientConfigs[$effectiveClient] = $configPath
+}
+$managedClientList = @($managedClientConfigs.Keys)
 [ordered]@{
     current_version = $version
     runtimes = @($retainedRuntimes) + @($currentRuntime)
+    clients = $managedClientList
     client = $effectiveClient
-    codex_config = if ($effectiveClient -eq 'Codex') { $configPath } else { $null }
-    dsh_config = if ($effectiveClient -eq 'DeepSeekHarness') { $configPath } else { $null }
+    codex_config = if ($managedClientConfigs.Contains('Codex')) { $managedClientConfigs['Codex'] } else { $null }
+    dsh_config = if ($managedClientConfigs.Contains('DeepSeekHarness')) { $managedClientConfigs['DeepSeekHarness'] } else { $null }
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
 
 [pscustomobject]@{ Installed = $targetExe; Version = $version; Client = $effectiveClient; ClientConfig = $configPath; CodexConfig = $configPath; ConfigChanged = $configChanged }

@@ -363,6 +363,29 @@ def test_cancellation_after_atomic_replace_is_still_success(
     assert output.is_file()
 
 
+def test_commit_to_an_occupied_output_path_is_refused_without_touching_the_file(
+    workbook_factory: object, arxml_factory: object, tmp_path: Path,
+) -> None:
+    """提交到已被占用的输出路径必须按契约拒绝，且不能动对方的文件。
+
+    「禁止覆盖」要在门面这一层也成立：桌面端与 MCP 都走这里，调用方拿到的
+    应该是明确的问题条目，而不是内部故障，更不是把别人的文件改掉。
+    """
+    facade = GatewayFacade()
+    output = tmp_path / "occupied.arxml"
+    output.write_text("别人的文件", encoding="utf-8")
+
+    prepared = facade.prepare(_request(workbook_factory(), arxml_factory()))  # type: ignore[operator]
+    result = facade.commit_prepared(prepared.session_id or "", str(output))
+
+    assert result.status is OperationStatus.VALIDATION_FAILED
+    assert any(issue.code == "OUTPUT_WRITE_FAILED" for issue in result.issues)
+    assert "已存在" in result.issues[0].message
+    # 对方的文件必须原样保留，临时文件也不能留下。
+    assert output.read_text(encoding="utf-8") == "别人的文件"
+    assert list(tmp_path.glob(f".{output.name}.*.tmp.arxml")) == []
+
+
 def test_input_change_blocks_commit(
     workbook_factory: object, arxml_factory: object, tmp_path: Path,
 ) -> None:

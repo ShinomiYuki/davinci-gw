@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from lxml import etree
 
+from davinci_gw.arxml import document as document_module
 from davinci_gw.arxml.document import ArxmlDocument
 from davinci_gw.domain.errors import ArxmlStructureError, OutputWriteError
 from davinci_gw.modules import definitions as defs
@@ -74,6 +75,57 @@ def test_default_refuses_overwrite(arxml_factory: object, tmp_path: Path) -> Non
     with pytest.raises(OutputWriteError, match="已存在"):
         ArxmlDocument.load(arxml_factory()).write_atomic(output)
     assert output.read_text(encoding="utf-8") == "existing"
+
+
+def test_file_appearing_during_write_is_not_clobbered(arxml_factory: object, tmp_path: Path) -> None:
+    """写出期间冒出来的同名文件不能被静默覆盖。
+
+    「默认不覆盖」不能只靠写出前的一次存在性检查：真正落盘前还要序列化
+    并复核整个 ARXML，几十兆的文件要花上几秒，这期间同名文件完全可能已被
+    别的进程或用户创建。此时必须失败，并且把对方的文件原样留下。
+    """
+    source = arxml_factory()
+    output = tmp_path / "raced.arxml"
+
+    def create_competing_file() -> None:
+        output.write_text("别人的文件", encoding="utf-8")
+
+    with pytest.raises(OutputWriteError, match="已存在"):
+        ArxmlDocument.load(source).write_atomic(output, before_replace=create_competing_file)
+    assert output.read_text(encoding="utf-8") == "别人的文件"
+
+
+def test_exclusive_publish_leaves_no_temporary_file(arxml_factory: object, tmp_path: Path) -> None:
+    """发布成功后目录里只应剩下目标文件。
+
+    硬链接发布是"目标一出现就是完整内容"，临时名要跟着摘掉；漏掉的话
+    用户会在输出目录里看到一个多余的 ``.xxx.tmp.arxml``。
+    """
+    source = arxml_factory()
+    output = tmp_path / "clean.arxml"
+    ArxmlDocument.load(source).write_atomic(output)
+    assert sorted(item.name for item in tmp_path.iterdir()) == sorted([source.name, output.name])
+    assert output.read_bytes().startswith(b"<?xml")
+
+
+def test_exclusive_publish_without_hard_link_support(
+    arxml_factory: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """文件系统不支持硬链接时，退路同样不许覆盖已有文件。"""
+
+    def refuse_link(*args: object, **kwargs: object) -> None:
+        raise OSError("该文件系统不支持硬链接")
+
+    monkeypatch.setattr(document_module.os, "link", refuse_link)
+    source = arxml_factory()
+    output = tmp_path / "fallback.arxml"
+
+    def create_competing_file() -> None:
+        output.write_text("别人的文件", encoding="utf-8")
+
+    with pytest.raises(OutputWriteError, match="已存在"):
+        ArxmlDocument.load(source).write_atomic(output, before_replace=create_competing_file)
+    assert output.read_text(encoding="utf-8") == "别人的文件"
 
 
 def test_input_output_path_must_differ(arxml_factory: object) -> None:

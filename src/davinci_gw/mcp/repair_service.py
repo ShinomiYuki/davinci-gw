@@ -9,24 +9,31 @@ import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from davinci_gw.application import GatewayFacade
 from davinci_gw.contracts import OperationStatus, UpdateRequestDto
 from davinci_gw.mcp.repair_agent import CodexRepairAgent, RepairAgent
+from davinci_gw.mcp.repair_contract import (
+    CANCEL_CONFIRMATION,
+    START_CONFIRMATION,
+    SUBMIT_CONFIRMATION,
+    SUBMIT_MODES,
+)
 from davinci_gw.mcp.repair_models import (
     AgentDiagnosis,
     DiagnosisRecord,
     FailureKind,
+    RepairContractError,
     RepairRecord,
     RepairState,
 )
 from davinci_gw.mcp.version import MCP_VERSION, load_build_info
 
-START_CONFIRMATION = "确认开始工具BUG自动修复"
-SUBMIT_CONFIRMATION = "确认提交工具BUG修复"
-CANCEL_CONFIRMATION = "确认取消工具BUG修复"
+if TYPE_CHECKING:  # pragma: no cover - 仅供类型检查
+    from davinci_gw.mcp.runtime import BoundedFacadeRuntime
+
 _CONVENTIONAL_COMMIT = re.compile(
     r"^(fix|feat|refactor|perf|test|build|ci|docs|chore)(\([a-z0-9_.-]+\))?!?: .+",
 )
@@ -34,10 +41,43 @@ _FORBIDDEN_SUFFIXES = {".xlsx", ".xls", ".arxml", ".dbc", ".ldf", ".blf", ".env"
 _INPUT_PREFIXES = (
     "WORKBOOK_", "INPUT_", "PATH_", "CAN_ID_", "OPERATION_", "TIMEOUT_", "SIGNAL_BIT_",
 )
+#: 禁止提交的顶层目录（仓库相对路径，小写）。Windows 的文件系统不区分大小写，
+#: ``Input/`` 与 ``input/`` 是同一个目录，所以比较时必须忽略大小写。
+_FORBIDDEN_INPUT_DIRECTORY = "input/"
+#: 构建产物目录。仓库跟踪的只有 ``release/README.md``（说明文档），不是产物；
+#: 真正的产物都是未跟踪的新文件，照旧拦下。
+_FORBIDDEN_ARTIFACT_DIRECTORY = "release/"
 
 
-class RepairContractError(ValueError):
-    """可直接返回给 MCP 用户的修复流程契约错误。"""
+def _changed_and_forbidden_paths(
+    porcelain: str, tracked: Sequence[str] = (),
+) -> tuple[list[str], list[str]]:
+    """从 ``git status --porcelain`` 的输出里分出改动清单与禁止提交的改动。
+
+    这是修复代理唯一的上线闸门：客户输入、构建产物和凭据文件一旦混进
+    提交，就会被推到 fork 或直接发布到维护者仓库。判定必须按 Windows 的
+    实际语义来——文件系统不区分大小写，凭据文件也不止 ``.env`` 一个名字。
+
+    ``tracked`` 是仓库 HEAD 里已经跟踪的文件。产物目录里被跟踪的只有说明
+    文档（``release/README.md``），它不是构建产物，不该被拦下；构建产物
+    本身都是未跟踪的新文件，照旧拦下。
+    """
+    changed: list[str] = []
+    for line in porcelain.splitlines():
+        if len(line) >= 4:
+            changed.append(line[3:].split(" -> ")[-1].strip('"'))
+    tracked_keys = {name.replace("\\", "/").casefold() for name in tracked}
+    forbidden: list[str] = []
+    for name in changed:
+        lowered = name.replace("\\", "/").casefold()
+        if (
+            Path(name).suffix.casefold() in _FORBIDDEN_SUFFIXES
+            or Path(name).name.casefold().startswith(".env")
+            or lowered.startswith(_FORBIDDEN_INPUT_DIRECTORY)
+            or (lowered.startswith(_FORBIDDEN_ARTIFACT_DIRECTORY) and lowered not in tracked_keys)
+        ):
+            forbidden.append(name)
+    return changed, forbidden
 
 
 async def _run(
@@ -115,9 +155,13 @@ class RepairCoordinator:
         facade: GatewayFacade | None = None,
         agent: RepairAgent | None = None,
         session_root: Path | None = None,
+        runtime: "BoundedFacadeRuntime | None" = None,
     ) -> None:
         self.facade = facade or GatewayFacade()
         self.agent = agent or CodexRepairAgent()
+        #: 复用 MCP 服务的重任务闸门；诊断里的预览必须和生成流程互斥，
+        #: 否则公开承诺的「同时只跑一个重任务」会被诊断绕过。
+        self.runtime = runtime
         if session_root is not None:
             root = session_root
         else:
@@ -170,10 +214,17 @@ class RepairCoordinator:
         baseline = _absolute_file(baseline_path, ".arxml", "baseline_path")
         repository = _repository(repository_path)
         python = _python(python_path)
-        prepared = await asyncio.to_thread(
-            self.facade.preview,
-            UpdateRequestDto(str(config), str(baseline)),
-        )
+        request = UpdateRequestDto(str(config), str(baseline))
+        if self.runtime is not None:
+            # 诊断里的预览和生成流程共用同一个重任务名额，避免两份 ARXML
+            # 同时驻留内存；取消令牌一并下传，客户端取消时能真正中止解析。
+            prepared = await self.runtime.run(
+                lambda token: self.facade.preview(request, cancellation=token),
+            )
+        else:
+            prepared = await asyncio.to_thread(self.facade.preview, request)
+        if prepared.status is OperationStatus.CANCELLED:
+            raise RepairContractError("诊断已被取消，未进入代码修复流程。")
         issues = _issue_dicts(prepared)
         succeeded = prepared.status is OperationStatus.SUCCESS
         session_id = getattr(prepared, "session_id", None)
@@ -367,17 +418,16 @@ class RepairCoordinator:
 
     async def _validate_changed_paths(self, record: RepairRecord) -> None:
         names = await _run("git", "status", "--porcelain", cwd=record.worktree_path)
-        changed: list[str] = []
-        for line in names.splitlines():
-            if len(line) >= 4:
-                changed.append(line[3:].split(" -> ")[-1].strip('"'))
+        try:
+            tracked_output = await _run(
+                "git", "ls-tree", "-r", "--name-only", "HEAD", cwd=record.worktree_path,
+            )
+        except RepairContractError:
+            # 取不到已跟踪清单就按最严口径处理：产物目录里的新文件一律拦下。
+            tracked_output = ""
+        changed, forbidden = _changed_and_forbidden_paths(names, tracked_output.splitlines())
         if not changed:
             raise RepairContractError("修复代理没有产生代码或测试改动。")
-        forbidden = [name for name in changed if (
-            Path(name).suffix.casefold() in _FORBIDDEN_SUFFIXES
-            or Path(name).name.casefold() == ".env"
-            or name.replace("\\", "/").startswith(("input/", "release/"))
-        )]
         if forbidden:
             raise RepairContractError(f"修复包含禁止提交的输入或产物：{', '.join(forbidden)}")
 
@@ -437,8 +487,8 @@ class RepairCoordinator:
         if not re.search(r"[\u4e00-\u9fff]", commit_message):
             raise RepairContractError("提交信息必须包含中文说明。")
         normalized_mode = mode.strip().upper()
-        if normalized_mode not in {"LOCAL_COMMIT", "DRAFT_PR", "MAINTAINER"}:
-            raise RepairContractError("mode 只能是 LOCAL_COMMIT、DRAFT_PR 或 MAINTAINER。")
+        if normalized_mode not in set(SUBMIT_MODES):
+            raise RepairContractError("mode 只能是 " + "、".join(SUBMIT_MODES) + "。")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", remote_name):
             raise RepairContractError("remote_name 格式无效。")
         if normalized_mode == "DRAFT_PR" and (

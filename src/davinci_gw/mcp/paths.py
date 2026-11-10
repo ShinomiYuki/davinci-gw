@@ -83,6 +83,45 @@ def validate_input_file(value: object, field_name: str, suffix: str) -> str:
     return str(resolved)
 
 
+def validate_local_repository(value: object, field_name: str) -> str:
+    """返回带源码和 .git 的本地绝对仓库目录。
+
+    修复类工具要在仓库里建分支、跑测试，路径必须与生成类工具同口径：
+    只认带盘符的本地目录，禁止 URL、UNC、设备和命名管道路径。
+    """
+    raw = _reject_unsafe_text(value, field_name)
+    path = Path(raw)
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise PathPolicyError("REPOSITORY_NOT_FOUND", "源码仓库不存在或无法访问。", field_name) from None
+    if not resolved.is_dir():
+        raise PathPolicyError("REPOSITORY_INVALID", "repository_path 必须指向目录。", field_name)
+    if not (resolved / ".git").exists() or not (resolved / "pyproject.toml").is_file():
+        raise PathPolicyError(
+            "REPOSITORY_INVALID", "repository_path 必须指向带源码和 .git 的 davinci-gw 本地仓库。", field_name,
+        )
+    return str(resolved)
+
+
+def validate_local_python(value: object, field_name: str) -> str:
+    """返回本地绝对 Python 解释器路径。
+
+    该路径随后会被真正执行，因此必须与输入文件同口径地限制为本地普通文件。
+    """
+    raw = _reject_unsafe_text(value, field_name)
+    path = Path(raw)
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise PathPolicyError("PYTHON_NOT_FOUND", "Python 解释器不存在或无法访问。", field_name) from None
+    if not resolved.is_file():
+        raise PathPolicyError("PYTHON_INVALID", "python_path 必须指向普通文件。", field_name)
+    if resolved.name.casefold() not in {"python.exe", "python"}:
+        raise PathPolicyError("PYTHON_INVALID", "python_path 必须指向 Python 可执行文件。", field_name)
+    return str(resolved)
+
+
 def validate_new_output(value: object, baseline_path: str, field_name: str = "output_path") -> str:
     """返回父目录已存在、目标尚不存在且不等于基准文件的新输出路径。"""
     raw = _reject_unsafe_text(value, field_name)
@@ -101,7 +140,11 @@ def validate_new_output(value: object, baseline_path: str, field_name: str = "ou
     baseline_key = os.path.normcase(os.path.realpath(str(baseline)))
     if output_key == baseline_key:
         raise PathPolicyError("BASELINE_OVERWRITE_FORBIDDEN", "输出不得覆盖或别名指向基准 ARXML。", field_name)
-    if resolved.exists():
+    # 用 ``lexists`` 而不是 ``exists``：悬空的符号链接在 ``exists`` 看来是
+    # 「不存在」，但这个名字其实已经被占住——真正写文件时按「名字被占用」
+    # 判定会被拒绝。两层必须用同一个口径，否则用户会收到「已存在」却看不到
+    # 文件。
+    if os.path.lexists(str(resolved)):
         try:
             same_as_baseline = os.path.samefile(resolved, baseline)
         except OSError:

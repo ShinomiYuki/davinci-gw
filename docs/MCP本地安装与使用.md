@@ -21,10 +21,10 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\install_mcp.ps1
 ```
 
-默认安装位置为：
+默认安装位置为（版本号随发布包变化）：
 
 ```text
-%LOCALAPPDATA%\Programs\DaVinciGW\versions\1.1.5\davinci-gw-mcp.exe
+%LOCALAPPDATA%\Programs\DaVinciGW\versions\<版本>\davinci-gw-mcp.exe
 ```
 
 安装器在复制前核对 `SHA256SUMS.txt` 中的全部文件。每个版本安装到独立目录，升级时 Codex 配置切换到新版本，因此正在运行的旧会话不会阻塞新版本安装；相同版本、相同内容可重复安装。Codex 配置有变化时会在原文件旁创建带 UTC 时间戳的 `.bak`。安装器只维护带以下标记的配置块，不会重写其他配置：
@@ -50,7 +50,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ```toml
 [mcp_servers.davinci_gateway]
-command = 'C:\Users\YOUR_NAME\AppData\Local\Programs\DaVinciGW\versions\1.1.5\davinci-gw-mcp.exe'
+command = 'C:\Users\YOUR_NAME\AppData\Local\Programs\DaVinciGW\versions\<版本>\davinci-gw-mcp.exe'
 startup_timeout_sec = 30
 tool_timeout_sec = 3600
 enabled = true
@@ -114,6 +114,14 @@ Prepared Session 默认 15 分钟过期、进程内最多 8 个。成功生成�
 确认提交工具BUG修复
 ```
 
+`submit_bug_repair` 的 `mode` 取三个值：`LOCAL_COMMIT`（只在本地提交）、`DRAFT_PR`（推送自己的 fork 并创建 Draft PR，需同时给出 `upstream_repository` 与 `fork_owner`）、`MAINTAINER`（维护者合并并发布）。取消进行中的修复同样需要原样确认：
+
+```text
+确认取消工具BUG修复
+```
+
+三条确认语与 `mode` 取值也会随 `get_gateway_capabilities` 的 `policies` 一并返回（`repair_start_confirmation`、`repair_submit_confirmation`、`repair_cancel_confirmation`、`repair_submit_modes`），客户端不需要靠报错文本反推。
+
 维护者可以选择合并并发布；外部用户只能推送自己的 fork 并创建 Draft PR。PR 不得包含真实 Excel、ARXML、DBC、LDF、BLF 或其他项目数据。修复失败或取消时会保留 worktree 和报告，主工作区不会被自动 stash、reset 或清理。
 
 ## 路径与输出安全
@@ -123,6 +131,7 @@ Prepared Session 默认 15 分钟过期、进程内最多 8 个。成功生成�
 - 配置表必须存在且为 `.xlsx`；基准必须存在且为 `.arxml`。
 - 输出父目录必须已存在；服务不会自动创建目录。
 - 输出必须是新 `.arxml`，不允许覆盖；也不允许大小写、规范化、符号链接或目录联接绕过基准保护。
+- 修复类工具同样按这套口径校验：`diagnose_generation_failure` 的 `config_path`、`baseline_path`、`repository_path`、`python_path` 都必须是带盘符的本地路径；`repository_path` 还必须指向带 `.git` 与 `pyproject.toml` 的源码目录，`python_path` 必须是本地 `python.exe` / `python`。
 - 响应最多返回 200 个问题，错误优先；总 JSON 响应上限为 512000 字节。
 
 ## 日志与故障排查
@@ -151,7 +160,9 @@ Prepared Session 默认 15 分钟过期、进程内最多 8 个。成功生成�
 .\uninstall_mcp.ps1
 ```
 
-卸载器会按安装清单逐个校验并删除安装器管理的所有 MCP 版本、配置块和安装清单；修改配置前同样备份。它不会递归删除安装根目录，因此历史备份和任何非本产品文件都不会被误删。完成卸载后重复执行是安全的；清单缺失但 `versions` 仍有文件时会拒绝猜测删除。
+卸载器会按安装清单逐个校验并删除安装器管理的所有 MCP 版本和安装清单，并清理安装清单里记录过的**每一个**客户端配置块（Codex 的 `config.toml`、DeepSeekHarness 的 `cordis.patch.yml`），修改配置前同样备份。安装清单会累计历史上配置过的客户端，所以先装到 Codex、再装到 DeepSeekHarness 后卸载，两个托管块都会被清掉，不会留下指向已删除 EXE 的悬空配置。
+
+若某个客户端的托管标记被手工改坏导致清理失败，卸载器会给出警告并继续删除运行时目录，不会半途停住；此时可手工删除对应文件里的 `# BEGIN DAVINCI_GW_MCP MANAGED BLOCK` 段落。`uninstall_mcp.ps1` 不会递归删除安装根目录，因此历史备份和任何非本产品文件都不会被误删。完成卸载后重复执行是安全的；清单缺失但 `versions` 仍有文件时会拒绝猜测删除。
 
 ## 从源码构建
 

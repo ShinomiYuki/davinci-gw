@@ -8,6 +8,12 @@ from typing import Any, AsyncGenerator
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
+from davinci_gw.mcp.repair_contract import (
+    CANCEL_CONFIRMATION,
+    START_CONFIRMATION,
+    SUBMIT_CONFIRMATION,
+    SUBMIT_MODES,
+)
 from davinci_gw.mcp.schemas import GatewayToolResponse
 from davinci_gw.mcp.service import GatewayMcpService
 from davinci_gw.mcp.version import MCP_VERSION
@@ -101,7 +107,8 @@ def build_server(service: GatewayMcpService | None = None) -> MCPServer[Any]:
         name="diagnose_generation_failure",
         description=(
             "使用原始 Excel/ARXML 稳定复现并区分 DBC 缺失、输入、基线、工具 BUG 或不确定；"
-            "只读诊断，不创建分支或修改文件。repository_path 必须包含完整源码。"
+            "只读诊断，不创建分支或修改文件。repository_path 必须包含完整源码；"
+            "四个路径参数都必须是带盘符的本地 Windows 绝对路径，禁止 UNC、设备和命名管道路径。"
         ),
         annotations=ToolAnnotations(
             read_only_hint=True, destructive_hint=False, idempotent_hint=False, open_world_hint=True,
@@ -120,6 +127,7 @@ def build_server(service: GatewayMcpService | None = None) -> MCPServer[Any]:
         description=(
             "仅对确认的工具 BUG，在用户提供指定确认语后创建隔离热修复分支和 worktree，"
             "后台完成修改、审查、测试、原输入复验与候选包构建。"
+            f"确认语必须原样为：{START_CONFIRMATION}"
         ),
         annotations=ToolAnnotations(
             read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True,
@@ -145,6 +153,8 @@ def build_server(service: GatewayMcpService | None = None) -> MCPServer[Any]:
         description=(
             "仅在全部修复验证通过且用户提供第二次指定确认语后执行正式提交；"
             "支持仅本地提交、外部贡献者 Draft PR 或维护者合并发布。"
+            f"确认语必须原样为：{SUBMIT_CONFIRMATION}；"
+            f"mode 取值为 {'、'.join(SUBMIT_MODES)}"
         ),
         annotations=ToolAnnotations(
             read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True,
@@ -166,7 +176,10 @@ def build_server(service: GatewayMcpService | None = None) -> MCPServer[Any]:
 
     @server.tool(
         name="cancel_bug_repair",
-        description="使用指定确认语取消活动修复；保留隔离 worktree 和报告供人工排查。",
+        description=(
+            "使用指定确认语取消活动修复；保留隔离 worktree 和报告供人工排查。"
+            f"确认语必须原样为：{CANCEL_CONFIRMATION}"
+        ),
         annotations=ToolAnnotations(
             read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False,
         ),

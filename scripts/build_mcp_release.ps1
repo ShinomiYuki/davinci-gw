@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Python = "python",
-    [string]$Version = "1.2.2"
+    [string]$Version = "1.3.6"
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +21,10 @@ $generatedRoot = Join-Path $projectRoot "build\mcp-metadata"
 $buildInfoPath = Join-Path $generatedRoot "BUILD_INFO.json"
 $pythonCommand = Get-Command $Python -ErrorAction Stop
 $pythonRoot = Split-Path $pythonCommand.Source -Parent
+# 仓库路径可能包含中文：让 Python 以 UTF-8 输出，避免 PowerShell 解码乱码。
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$env:PYTHONIOENCODING = "utf-8"
 $condaLibraryBin = Join-Path $pythonRoot "Library\bin"
 if (Test-Path -LiteralPath $condaLibraryBin -PathType Container) {
     # Conda 将 lxml 的 libxml2/libxslt 等依赖放在此处；PyInstaller 需在分析阶段找到它们。

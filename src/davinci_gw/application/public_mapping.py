@@ -8,12 +8,17 @@ from pathlib import Path
 
 from davinci_gw.contracts import CheckResultDto, IssueDto, JsonValue, MessageIdentityDto
 from davinci_gw.domain.models import ArxmlInspectionResult, RetentionDecision, ValidationIssue, WorkbookData
+from davinci_gw.security.redaction import redact_value
 
 
 def _safe_actual(value: object) -> JsonValue:
     if isinstance(value, BaseException):
         return "<internal-error>"
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if isinstance(value, str):
+        # 实际值可能来自工作簿单元格或输入文本，凭据形态要在这里统一抹掉：
+        # 问题表、详情弹窗、复制导出与 MCP 响应都共用这一个出口。
+        return redact_value(value)
+    if value is None or isinstance(value, (int, float, bool)):
         return value
     if isinstance(value, Decimal):
         return str(value)

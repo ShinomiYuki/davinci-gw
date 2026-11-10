@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 
 from davinci_gw.arxml.document import ArxmlDocument
+from davinci_gw.arxml.namespace import direct_child_text, qualified
 from davinci_gw.domain.errors import OutputValidationError
 from davinci_gw.domain.models import MutationAction, MutationKind, MutationPlan
 from davinci_gw.modules import definitions as defs
@@ -201,5 +202,36 @@ def validate_generated_output(document: ArxmlDocument, plan: MutationPlan) -> No
                 f"本次新增Handle ID“{definition}={value}”在输出中出现"
                 f"{output_handles[handle]}次，计划为{planned_count}次"
             )
+    for operation in plan.operations:
+        if operation.action is not MutationAction.CREATE:
+            continue
+        if operation.kind is MutationKind.COM_GW_SOURCE:
+            signal_definition = defs.COM_GW_SOURCE_SIGNAL
+            reference_definition = defs.COM_GW_SOURCE_SIGNAL_REF
+        elif operation.kind is MutationKind.COM_GW_DESTINATION:
+            signal_definition = defs.COM_GW_DEST_SIGNAL
+            reference_definition = defs.COM_GW_DEST_SIGNAL_REF
+        else:
+            continue
+        found = index.find_by_path(operation.object_path)
+        if len(found) != 1:
+            continue
+        group = found[0].find(qualified(document.namespace, "SUB-CONTAINERS"))
+        children = (
+            [child for child in list(group)
+             if definition_ref(child, document.namespace) == signal_definition]
+            if group is not None else []
+        )
+        for child in children:
+            # 递归语义只聚合引用值数，缺少 mandatory 引用的空壳子容器在值数上看不出来，
+            # 必须逐个子容器核对信号引用是否齐备。
+            _, references = semantic_values(child, document.namespace)
+            count = len(references.get(reference_definition, ()))
+            if count != 1:
+                name = direct_child_text(child, document.namespace, "SHORT-NAME") or "<未命名>"
+                failures.append(
+                    f"新建的网关端点“{operation.object_path}”下信号子容器“{name}”"
+                    f"带有{count}个信号引用，必须恰好 1 个"
+                )
     if failures:
         raise OutputValidationError("输出ARXML验证失败：" + "；".join(failures[:10]) + "。")

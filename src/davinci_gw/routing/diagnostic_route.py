@@ -136,6 +136,19 @@ class DiagnosticRoutePlanner:
         rx_id, tx_id = ((endpoint.request_id, endpoint.response_id) if request_side else
                         (endpoint.response_id, endpoint.request_id))
         rx_frames, tx_frames = self.frames(endpoint.channel, rx_id, True), self.frames(endpoint.channel, tx_id, False)
+        # 通道属性决定该通道用经典 CAN 还是 CAN FD：同一 CAN ID 上并存经典与 FD
+        # 两个诊断透传端点是真实工程常见结构（真实基线的 DGCAN 0x734/0x7B4 即是）。
+        # 功能寻址早已按通道属性筛选帧，物理寻址必须同一口径，否则会把并存端点
+        # 误报成歧义，而用户在配置表侧无法消除另一个端点。
+        rx_type, tx_type, _length, _ta = channel_properties(endpoint.channel)
+        rx_frames = tuple(
+            node for node in rx_frames
+            if self.values(node)[0].get(d.CANIF_RX_CAN_ID_TYPE) == (rx_type,)
+        )
+        tx_frames = tuple(
+            node for node in tx_frames
+            if self.values(node)[0].get(d.CANIF_TX_CAN_ID_TYPE) == (tx_type,)
+        )
         if not rx_frames and not tx_frames:
             return None
         if len(rx_frames) > 1 or len(tx_frames) > 1:

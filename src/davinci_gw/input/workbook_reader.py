@@ -38,6 +38,7 @@ from .workbook_schema import (
 )
 
 VERSION_PATTERN = re.compile(r"_v(\d+(?:\.\d+)*)\.xlsx$", re.IGNORECASE)
+VERSION_RANGE_PATTERN = re.compile(r"_v(\d+(?:\.\d+)*)-(\d+(?:\.\d+)*)\.xlsx$", re.IGNORECASE)
 MAX_CAN_ID = 0x1FFFFFFF
 
 
@@ -72,17 +73,38 @@ def _issue(
     )
 
 
+def _normalize_version(raw: str) -> str:
+    """把版本号各段规范化为整数形式，例如 04.083 变为 4.83。"""
+    return ".".join(str(int(part)) for part in raw.split("."))
+
+
 def parse_target_version(path: Path) -> tuple[str | None, ValidationIssue | None]:
-    """从大小写不敏感的 *_vX.x.xlsx 文件名解析并规范化版本。"""
+    """从大小写不敏感的 *_vX.x.xlsx 文件名解析并规范化版本。
+
+    兼容客户常见的版本区间命名（*_v4.83-4.85.xlsx）：取区间上限作为目标
+    版本，并给出需要人工确认的警告，避免把版本解释静默写进产物。
+    """
     match = VERSION_PATTERN.search(path.name)
-    if not match:
-        return None, ValidationIssue(
-            code="WORKBOOK_VERSION_MISSING",
-            message=f"配置表“{path}”无法从配置表文件名识别目标版本，请使用 *_vX.x.xlsx 格式。",
+    if match:
+        return _normalize_version(match.group(1)), None
+    range_match = VERSION_RANGE_PATTERN.search(path.name)
+    if range_match:
+        lower = _normalize_version(range_match.group(1))
+        upper = _normalize_version(range_match.group(2))
+        return upper, ValidationIssue(
+            code="WORKBOOK_VERSION_RANGE",
+            message=(
+                f"配置表“{path.name}”是版本区间文件（{lower} 至 {upper}），"
+                f"已按目标版本 {upper} 处理；如与本次目标版本不符，请改用 *_vX.x.xlsx 命名。"
+            ),
+            severity=ValidationSeverity.WARNING,
             file_path=path,
         )
-    version = ".".join(str(int(part)) for part in match.group(1).split("."))
-    return version, None
+    return None, ValidationIssue(
+        code="WORKBOOK_VERSION_MISSING",
+        message=f"配置表“{path}”无法从配置表文件名识别目标版本，请使用 *_vX.x.xlsx 格式。",
+        file_path=path,
+    )
 
 
 def _header_map(
@@ -91,9 +113,12 @@ def _header_map(
     cells = next(sheet.iter_rows(min_row=1, max_row=1), ())
     values = tuple(_cell_value(cell) for cell in cells)
     found: dict[str, int] = {}
+    duplicated: dict[str, list[int]] = {}
     for index, value in enumerate(values):
         cleaned = _clean_string(value)
         if isinstance(cleaned, str) and cleaned:
+            if cleaned in found:
+                duplicated.setdefault(cleaned, [found[cleaned]]).append(index)
             found[cleaned] = index
     missing = [header for header in expected if header not in found]
     for header in missing:
@@ -101,7 +126,19 @@ def _header_map(
             path, sheet.title, 1, header, None,
             "缺少必需表头，请补充该列后重试。", "WORKBOOK_HEADER_MISSING",
         ))
-    return None if missing else found
+    # 同一表头出现多列时，列映射只能落到其中一列，另一列会被静默忽略并按
+    # 错误列取值生成路由。必需表头重复必须阻断，不能替用户挑一列。
+    duplicate_headers = {
+        header: indexes for header, indexes in duplicated.items() if header in expected
+    }
+    for header, indexes in duplicate_headers.items():
+        columns = "、".join(f"第{index + 1}列" for index in sorted(indexes))
+        issues.append(_issue(
+            path, sheet.title, 1, header, None,
+            f"在同一行出现多次（{columns}）；同一表头只能有一列，"
+            "请删除或改名重复的列后重试。", "WORKBOOK_HEADER_DUPLICATE",
+        ))
+    return None if missing or duplicate_headers else found
 
 
 def _cell_value(cell: Any) -> object:

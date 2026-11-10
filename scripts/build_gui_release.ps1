@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Python = "python",
-    [string]$Version = "1.2.2"
+    [string]$Version = "1.3.6"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,9 +15,33 @@ $archivePath = Join-Path $releaseRoot "davinci-gw-gui-$Version-win-x64.zip"
 $archiveHashPath = "$archivePath.sha256"
 $pythonCommand = Get-Command $Python -ErrorAction Stop
 $pythonRoot = Split-Path $pythonCommand.Source -Parent
+# 仓库路径可能包含中文。Python 按系统代码页输出路径，PowerShell 再按 UTF-8 解码会得到乱码，
+# 导致后续 Copy-Item 找不到文件；这里让 Python 直接以 UTF-8 输出，两侧编码保持一致。
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$env:PYTHONIOENCODING = "utf-8"
 $condaLibraryBin = Join-Path $pythonRoot "Library\bin"
 if (Test-Path -LiteralPath $condaLibraryBin -PathType Container) {
     $env:PATH = "$condaLibraryBin;$env:PATH"
+}
+
+function Get-PythonBasePrefix {
+    # 返回解释器的基础安装前缀；虚拟环境的 Scripts 目录不是安装根。
+    $prefix = (& $Python -c "import sys; print(sys.base_prefix)").Trim()
+    if ($prefix) { return $prefix }
+    return $pythonRoot
+}
+
+function Get-PackageFile {
+    # 按文件名在已安装的包里定位一个文件；返回空字符串表示没找到。
+    param([string]$Package, [string[]]$Names)
+    foreach ($name in $Names) {
+        $script = "from importlib.metadata import distribution; d = distribution('$Package'); " +
+            "print(next((str(d.locate_file(f)) for f in d.files if f.name == '$name'), ''))"
+        $found = (& $Python -c $script).Trim()
+        if ($found -and (Test-Path -LiteralPath $found)) { return $found }
+    }
+    return ""
 }
 
 foreach ($path in @($buildRoot, $distRoot, $stageRoot)) {
@@ -52,14 +76,17 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "licenses\LGPL-3.0.txt") -Destina
 Copy-Item -LiteralPath (Join-Path $projectRoot "licenses\lxml-LICENSES.txt") -Destination $licenseRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "licenses\OpenSSL-LICENSE.txt") -Destination $licenseRoot
 $pythonLicense = @("LICENSE_PYTHON.txt", "LICENSE.txt") |
-    ForEach-Object { Join-Path $pythonRoot $_ } |
+    ForEach-Object { Join-Path (Get-PythonBasePrefix) $_ } |
     Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
     Select-Object -First 1
 if (-not $pythonLicense) { throw "Python runtime license was not found." }
 Copy-Item -LiteralPath $pythonLicense -Destination (Join-Path $licenseRoot "Python-LICENSE.txt")
-$pyInstallerLicense = & $Python -c "from importlib.metadata import distribution; d=distribution('pyinstaller'); print(next(d.locate_file(f) for f in d.files if f.name == 'COPYING.txt'))"
-$openpyxlLicense = & $Python -c "from importlib.metadata import distribution; d=distribution('openpyxl'); print(next(d.locate_file(f) for f in d.files if f.name == 'LICENCE.rst'))"
-$etXmlfileLicense = & $Python -c "from importlib.metadata import distribution; d=distribution('et_xmlfile'); print(next(d.locate_file(f) for f in d.files if f.name == 'LICENCE.rst'))"
+$pyInstallerLicense = Get-PackageFile "pyinstaller" @("COPYING.txt", "COPYING", "LICENSE.txt")
+$openpyxlLicense = Get-PackageFile "openpyxl" @("LICENCE.rst", "LICENSE.rst", "LICENSE.txt")
+$etXmlfileLicense = Get-PackageFile "et_xmlfile" @("LICENCE.rst", "LICENSE.rst", "LICENSE.txt")
+if (-not $pyInstallerLicense) { throw "PyInstaller license file was not found." }
+if (-not $openpyxlLicense) { throw "openpyxl license file was not found." }
+if (-not $etXmlfileLicense) { throw "et_xmlfile license file was not found." }
 Copy-Item -LiteralPath $pyInstallerLicense `
     -Destination (Join-Path $licenseRoot "PyInstaller-COPYING.txt")
 Copy-Item -LiteralPath $openpyxlLicense `

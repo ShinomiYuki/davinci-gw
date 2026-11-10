@@ -36,6 +36,56 @@ def _serialize_tree(tree: etree._ElementTree, target: Path, **options: Any) -> N
     tree.write(str(target), **options)
 
 
+def _publish_exclusive(temp_path: Path, output: Path) -> None:
+    """把临时文件发布到目标路径，且绝不覆盖已经存在的文件。
+
+    「默认不覆盖」不能只在写出前查一次存在性：真正落盘前还要序列化并复核
+    整个 ARXML，几十兆的文件要花上几秒，这期间同名文件完全可能已经被别的
+    进程或用户创建，事后覆盖就是把别人的数据抹掉。这里在发布的最后一刻
+    做一次**原子**判定：
+
+    - 先试硬链接：目标已存在时系统直接报 ``FileExistsError``，发布因此是
+      原子的——目标要么不存在，要么一出现就是完整内容；
+    - 文件系统不支持硬链接时退回到 ``O_EXCL`` 占位文件：同样能原子地判定
+      「名字已被占用」，只是目标会短暂是一个空文件。
+    """
+    try:
+        os.link(temp_path, output)
+    except FileExistsError:
+        raise OutputWriteError(
+            f"输出文件“{output}”已存在；默认不覆盖，请更换路径或显式允许覆盖。"
+        ) from None
+    except OSError:
+        _publish_with_placeholder(temp_path, output)
+        return
+    # 硬链接成功：内容已经就位，临时名不再需要。
+    try:
+        temp_path.unlink(missing_ok=True)
+    except OSError:  # pragma: no cover - 临时名删不掉时只会多留一个副本
+        pass
+
+
+def _publish_with_placeholder(temp_path: Path, output: Path) -> None:
+    """文件系统不支持硬链接时的退路：先原子占位，再原子替换。"""
+    try:
+        descriptor = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise OutputWriteError(
+            f"输出文件“{output}”已存在；默认不覆盖，请更换路径或显式允许覆盖。"
+        ) from None
+    os.close(descriptor)
+    try:
+        os.replace(temp_path, output)
+    except OSError:
+        # 发布失败：撤掉占位文件，不留下 0 字节的假结果。
+        try:
+            if output.is_file() and output.stat().st_size == 0:
+                output.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - 占位文件删不掉时的兜底
+            pass
+        raise
+
+
 def _package_path(node: etree._Element, namespace: str) -> str:
     names: list[str] = []
     for ancestor in node.iterancestors():
@@ -186,7 +236,12 @@ class ArxmlDocument:
                 validator(temporary_document)
             if before_replace is not None:
                 before_replace()
-            os.replace(temp_path, output)
+            if overwrite:
+                os.replace(temp_path, output)
+            else:
+                # 「默认不覆盖」必须在发布的最后一刻才判定：序列化与复核要花
+                # 上几秒，这期间同名文件完全可能已经被别的进程或用户创建。
+                _publish_exclusive(temp_path, output)
             temp_path = None
             return output
         except (OutputWriteError, OutputValidationError, OutputCommitAbortedError):

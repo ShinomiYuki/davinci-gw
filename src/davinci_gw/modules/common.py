@@ -179,6 +179,42 @@ def select_template(
     return selected
 
 
+def _is_empty_container(container: etree._Element) -> bool:
+    """判断容器是否既无有效参数/引用，又无子容器。"""
+    for group in container:
+        if not isinstance(group.tag, str):
+            continue
+        if local_name(group) in {"PARAMETER-VALUES", "REFERENCE-VALUES", "SUB-CONTAINERS"}:
+            if len(group) > 0:
+                return False
+    return True
+
+
+def _prune_empty_containers(node: etree._Element) -> None:
+    """删除克隆产物中缺少 mandatory 内容的空壳子容器。
+
+    同一个引用可以分布在多个子容器里（AUTOSAR 允许一个 ComGwDestination 挂多个
+    ComGwSignal）。计划只需要其中一部分时，多余的引用条目会被删除，其所在子容器
+    就变成缺少 mandatory 引用的空壳；只删条目会产出结构非法的 ARXML，因此必须
+    连同容器一起删除。逆序遍历保证先处理子容器，父容器随后也能被判定为空。
+    """
+    for container in reversed(list(node.iter())):
+        if container is node or not isinstance(container.tag, str):
+            continue
+        if local_name(container.tag) != "ECUC-CONTAINER-VALUE":
+            continue
+        for group in list(container):
+            if not isinstance(group.tag, str):
+                continue
+            if local_name(group) in {"PARAMETER-VALUES", "REFERENCE-VALUES"} and len(group) == 0:
+                container.remove(group)
+        if not _is_empty_container(container):
+            continue
+        parent = container.getparent()
+        if parent is not None:
+            parent.remove(container)
+
+
 def _filter_value_entries(
     node: etree._Element, namespace: str, parameter_defs: set[str], reference_defs: set[str],
 ) -> None:
@@ -196,6 +232,7 @@ def _filter_value_entries(
                     group.remove(entry)
             if len(group) == 0:
                 owner.remove(group)
+    _prune_empty_containers(node)
 
 
 def _set_values(node: etree._Element, namespace: str, operation: MutationOperation) -> None:
@@ -231,6 +268,7 @@ def _set_values(node: etree._Element, namespace: str, operation: MutationOperati
         raise ArxmlStructureError(
             f"同类型模板缺少计划参数或引用：{', '.join(sorted(missing))}。"
         )
+    _prune_empty_containers(node)
 
 
 def deterministic_uuid(seed: str) -> str:

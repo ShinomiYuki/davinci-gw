@@ -4,9 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: MCP 版本（本轮必须为 1.0.0）
+        description: MCP 版本（须与源码 MCP_VERSION 一致）
         required: true
-        default: "1.0.0"
 
 permissions:
   contents: write
@@ -35,7 +34,6 @@ jobs:
         shell: pwsh
         run: |
           if ($env:GITHUB_REF -ne 'refs/heads/main') { throw 'MCP 正式版只能从 main 发布' }
-          if ('${{ inputs.version }}' -ne '1.0.0') { throw '本轮只允许发布 MCP 1.0.0' }
           $sourceVersion = conda run -n davinci-gw-release python -c "from davinci_gw.mcp.version import MCP_VERSION; print(MCP_VERSION)"
           if ($sourceVersion.Trim() -ne '${{ inputs.version }}') { throw '源码版本与发布输入不一致' }
           conda run -n davinci-gw-release python -m pytest -q

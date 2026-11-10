@@ -19,18 +19,13 @@ def channel_token(channel: str) -> str:
     return cleaned[:-3].rstrip("_") if cleaned.upper().endswith("CAN") and len(cleaned) > 3 else cleaned
 
 
-def direct_source_name(message: str, channel: str) -> str:
-    """返回 EcuC/CanIf 接收对象名称。"""
-    return f"GWT_{safe_name(message)}_{channel_token(channel)}_Rx"
-
-
-def direct_target_name(message: str, channel: str) -> str:
-    """返回 EcuC/CanIf 发送对象名称。"""
-    return f"GWT_{safe_name(message)}_{channel_token(channel)}_Tx"
-
-
 def direct_endpoint_name(module: str, message: str, can_id: int, channel: str, direction: str) -> str:
-    """只用于新建 CanIf/EcuC 对象，完整保留通道和 CAN ID。"""
+    """只用于新建 CanIf/EcuC 对象，完整保留通道和 CAN ID。
+
+    命名必须编码**完整身份**：同一报文名在同一通道上可以对应多个 CAN ID，
+    名字里少了 CAN ID 就会让两条合法路由撞成同名对象。历史上
+    ``ComGwDestination`` 就因为只编码目标网段而出现过这种重名。
+    """
     return f"GWT_{module}_{safe_name(message)}_{can_id:X}_{safe_name(channel)}_{direction}"
 
 
@@ -55,5 +50,27 @@ def com_source_name(source_signal: str, source_network: str) -> str:
 
 
 def com_destination_name(target_signal: str, target_network: str) -> str:
-    """返回 ComGwDestination 名称。"""
+    """返回 ComGwDestination 名称。
+
+    名称只编码目标网段：同一目标网段里的不同目标信号要靠
+    ``unique_destination_name`` 追加序号区分，否则同一父容器下会出现
+    两个同名对象。
+    """
     return f"ComGwDestination_to_{safe_name(target_network)}"
+
+
+def unique_destination_name(base: str, used: set[str]) -> str:
+    """在一条 Mapping 内给出不重名的 Destination 名。
+
+    同名时按 ``_001``、``_002`` 追加序号——真实工程里的 ComGwDestination
+    也用这种带序号的写法区分同一条 Mapping 下的多个目标。
+    """
+    if base not in used:
+        used.add(base)
+        return base
+    index = 1
+    while f"{base}_{index:03d}" in used:
+        index += 1
+    name = f"{base}_{index:03d}"
+    used.add(name)
+    return name

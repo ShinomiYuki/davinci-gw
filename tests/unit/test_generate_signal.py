@@ -95,6 +95,44 @@ def test_signal_one_to_many_has_one_source_and_two_destinations(
     assert parameters[defs.COM_SIGNAL_ACCESS] == ("ACCESS_NEEDED_BY_SWC_OR_COM",)
 
 
+def test_signal_one_to_many_in_same_network_gets_unique_destination_names(
+    workbook_factory: object, arxml_factory: object, tmp_path: Path,
+) -> None:
+    """同一目标网段里的两个目标信号必须得到两个不重名的 Destination。
+
+    Destination 名只编码目标网段，若不补序号，同一父容器下就会出现重名
+    对象，预检会以「重复名称」阻断生成——而一对多本就是工具明确支持的
+    场景，真实工程里同一条 Mapping 挂多个 Destination 也很常见。
+    """
+    rows = (signal_row(), signal_row(**{"目标信号名": "DST_SIG_2"}))
+    workbook = workbook_factory(direct_rows=(), signal_rows=rows)
+    output = tmp_path / "signal_same_network.arxml"
+    report = generate_inputs(workbook, arxml_factory(), output)
+    assert report.is_success, _messages(report)
+    assert report.plan.signal_added_count == 2
+    document = ArxmlDocument.load(output)
+    mapping = document.build_index().find_by_path("/Cfg/Com/ComConfig/GWT_Sig_SRC_SIG_SRC")[0]
+    group = mapping.find(f"{{{document.namespace}}}SUB-CONTAINERS")
+    destinations = [
+        child for child in group
+        if definition_ref(child, document.namespace) == defs.COM_GW_DEST
+    ]
+    names = [child.findtext(f"{{{document.namespace}}}SHORT-NAME") for child in destinations]
+    assert len(names) == 2
+    assert len(set(names)) == 2, f"同一 Mapping 下的 Destination 重名：{names}"
+    targets = []
+    for child in destinations:
+        _, references = semantic_values(child, document.namespace, recursive=True)
+        targets.append(references.get(defs.COM_GW_DEST_SIGNAL_REF))
+    assert sorted(targets) == sorted([
+        ("/Cfg/Com/ComConfig/DST_SIG_oDST_MSG_oDST_Tx",),
+        ("/Cfg/Com/ComConfig/DST_SIG_2_oDST_MSG_oDST_Tx",),
+    ])
+    repeated = generate_inputs(workbook, output, tmp_path / "repeated.arxml")
+    assert repeated.is_success, _messages(repeated)
+    assert not repeated.plan.operations
+
+
 def test_missing_target_signal_is_visible_skip_and_does_not_block_valid_target(
     workbook_factory: object, arxml_factory: object, tmp_path: Path,
 ) -> None:

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Iterable
 
 from davinci_gw.arxml.document import ArxmlDocument
-from davinci_gw.domain.models import MutationPlan, WorkbookData
+from davinci_gw.domain.models import MutationPlan, ValidationIssue, WorkbookData
 from davinci_gw.mutations import MutationHandlerRegistry
 
 from .add import AddCoordinator
@@ -13,27 +14,48 @@ from .delete import DeleteCoordinator
 from .doip_route import DoIPRoutePlanner
 
 
+def _issue_identity(issue: ValidationIssue) -> tuple[object, ...]:
+    """问题的完整可见身份；同一身份的问题只应向用户展示一次。"""
+    return (
+        issue.code,
+        issue.message,
+        issue.severity,
+        issue.category,
+        issue.file_path,
+        issue.location,
+        issue.field_name,
+        repr(issue.actual_value),
+    )
+
+
+def _deduplicate_issues(issues: Iterable[ValidationIssue]) -> tuple[ValidationIssue, ...]:
+    """按完整可见身份去重。
+
+    DELETE、ADD 与 DoIP 三个阶段各用各的只读索引服务，同一条基线问题可能在多个
+    阶段各发现一次；按完整可见身份统一去重，不再只照顾某一个告警代码。
+    """
+    unique: dict[tuple[object, ...], ValidationIssue] = {}
+    for issue in issues:
+        unique.setdefault(_issue_identity(issue), issue)
+    return tuple(unique.values())
+
+
+def _merge_doip_plan(combined: MutationPlan, doip_plan: MutationPlan) -> MutationPlan:
+    """把 DoIP 阶段结果并入总计划；与既有阶段重复的基线问题只保留一条。"""
+    return replace(
+        combined,
+        operations=combined.operations + doip_plan.operations,
+        issues=_deduplicate_issues(combined.issues + doip_plan.issues),
+        expected_new_uuids=combined.expected_new_uuids + doip_plan.expected_new_uuids,
+        doip_added_count=doip_plan.doip_added_count,
+        doip_existing_count=doip_plan.doip_existing_count,
+        doip_skipped_count=doip_plan.doip_skipped_count,
+    )
+
+
 def _merge_plans(delete: MutationPlan, add: MutationPlan) -> MutationPlan:
     """合并两个阶段的操作、问题、决策和用户可见统计。"""
-    issues = []
-    issue_keys: set[tuple[object, ...]] = set()
-    for issue in delete.issues + add.issues:
-        # DELETE 和 ADD 使用各自的只读索引服务，同一基线问题可能在两个阶段各发现一次。
-        # 这里按完整可见身份统一去重，不再只照顾某一个告警代码。
-        key = (
-            issue.code,
-            issue.message,
-            issue.severity,
-            issue.category,
-            issue.file_path,
-            issue.location,
-            issue.field_name,
-            repr(issue.actual_value),
-        )
-        if key in issue_keys:
-            continue
-        issue_keys.add(key)
-        issues.append(issue)
+    issues = _deduplicate_issues(delete.issues + add.issues)
     return MutationPlan(
         operations=delete.operations + add.operations,
         issues=tuple(issues),
@@ -114,14 +136,7 @@ class TransactionCoordinator:
             if not doip_plan.errors:
                 uuids = doip_coordinator._preflight_operations(operations, issues)
             doip_plan = replace(doip_plan, operations=operations, issues=tuple(issues), expected_new_uuids=uuids)
-            combined = replace(
-                combined, operations=combined.operations + doip_plan.operations,
-                issues=combined.issues + doip_plan.issues,
-                expected_new_uuids=combined.expected_new_uuids + doip_plan.expected_new_uuids,
-                doip_added_count=doip_plan.doip_added_count,
-                doip_existing_count=doip_plan.doip_existing_count,
-                doip_skipped_count=doip_plan.doip_skipped_count,
-            )
+            combined = _merge_doip_plan(combined, doip_plan)
             if not combined.errors:
                 doip_coordinator.apply(doip_plan)
         return combined

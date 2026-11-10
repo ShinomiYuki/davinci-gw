@@ -239,6 +239,74 @@ def test_dsh_install_preserves_patch_and_repeated_install_is_idempotent(tmp_path
     assert not (install_root / "versions" / "1.0.0").exists()
 
 
+def test_uninstall_clears_dsh_block_without_explicit_client(tmp_path: Path) -> None:
+    """装到 DeepSeekHarness 后用默认参数卸载，DSH 的托管配置块必须被清掉。
+
+    卸载器原先只看命令行上的 -Client，默认值是 Codex；
+    装到 DSH 的场景下用默认参数卸载会留下指向已删除 EXE 的托管块。
+    """
+    project = Path(__file__).resolve().parents[2]
+    package = _package(tmp_path)
+    dsh_home = tmp_path / "dsh-home"
+    dsh_home.mkdir()
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    install_root = tmp_path / "installed"
+    _run(
+        project / "scripts" / "install_mcp.ps1",
+        "-PackageRoot", str(package), "-InstallRoot", str(install_root),
+        "-Client", "DeepSeekHarness", "-DshHome", str(dsh_home),
+    )
+    config = dsh_home / "cordis.patch.yml"
+    assert "davinci_gateway" in config.read_text(encoding="utf-8")
+
+    # 不传 -Client：卸载器必须按安装清单记住的客户端来清理
+    _run(
+        project / "scripts" / "uninstall_mcp.ps1",
+        "-InstallRoot", str(install_root), "-CodexHome", str(codex_home),
+        "-DshHome", str(dsh_home),
+    )
+    assert "davinci_gateway" not in config.read_text(encoding="utf-8")
+    assert not (install_root / "versions" / "1.0.0").exists()
+    assert not (install_root / "install-manifest.json").exists()
+
+
+def test_uninstall_clears_every_client_block_written_over_time(tmp_path: Path) -> None:
+    """先后装到 Codex 与 DeepSeekHarness 后卸载，两个托管块都要清掉。
+
+    安装清单只记住最后一个客户端时，另一份配置会残留；
+    清单必须累计历史上配置过的客户端。
+    """
+    project = Path(__file__).resolve().parents[2]
+    package = _package(tmp_path)
+    install_root = tmp_path / "installed"
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    dsh_home = tmp_path / "dsh-home"
+    dsh_home.mkdir()
+    script = project / "scripts" / "install_mcp.ps1"
+
+    _run(
+        script, "-PackageRoot", str(package), "-InstallRoot", str(install_root),
+        "-CodexHome", str(codex_home),
+    )
+    _run(
+        script, "-PackageRoot", str(package), "-InstallRoot", str(install_root),
+        "-Client", "DeepSeekHarness", "-DshHome", str(dsh_home),
+    )
+    manifest = json.loads((install_root / "install-manifest.json").read_text(encoding="utf-8-sig"))
+    assert set(manifest["clients"]) == {"Codex", "DeepSeekHarness"}
+
+    _run(
+        project / "scripts" / "uninstall_mcp.ps1",
+        "-InstallRoot", str(install_root), "-CodexHome", str(codex_home),
+        "-DshHome", str(dsh_home),
+    )
+    assert "davinci_gateway" not in (codex_home / "config.toml").read_text(encoding="utf-8-sig")
+    assert "davinci_gateway" not in (dsh_home / "cordis.patch.yml").read_text(encoding="utf-8")
+    assert not (install_root / "versions" / "1.0.0").exists()
+
+
 def test_dsh_unmanaged_server_blocks_install_before_copy(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[2]
     package = _package(tmp_path)

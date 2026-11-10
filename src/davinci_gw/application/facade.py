@@ -132,8 +132,16 @@ class GatewayFacade:
             config_path = Path(request.config_path).expanduser().resolve()
             baseline_path = Path(request.baseline_path).expanduser().resolve()
             if config_path.is_file() and baseline_path.is_file():
-                initial_config = fingerprint_file(config_path)
-                initial_baseline = fingerprint_file(baseline_path)
+                try:
+                    initial_config = fingerprint_file(config_path)
+                    initial_baseline = fingerprint_file(baseline_path)
+                except InputFingerprintChangedError:
+                    raise
+                except OSError:
+                    # 文件存在却读不到（权限、被独占、占位符）时不能把整步降级为
+                    # INTERNAL_FAILURE：输入校验层随后会给出可读的「无法读取」提示，
+                    # 这里只放弃指纹复核能力，保留那条可诊断的线索。
+                    initial_config = initial_baseline = None
             prepared = prepare_transaction(config_path, baseline_path, checkpoint=checkpoint,
                                            doip_missing_policy=request.doip_missing_policy)
             plan_issues = prepared.plan.issues if prepared.plan else ()
@@ -164,9 +172,22 @@ class GatewayFacade:
                 )
             reporter.emit("fingerprint_recheck", "复核输入指纹", 6, 7)
             token.checkpoint("fingerprint_recheck")
-            final_config = fingerprint_file(config_path)
-            final_baseline = fingerprint_file(baseline_path)
-            if initial_config != final_config or initial_baseline != final_baseline:
+            try:
+                final_config = fingerprint_file(config_path)
+                final_baseline = fingerprint_file(baseline_path)
+            except InputFingerprintChangedError:
+                raise
+            except OSError:
+                # 输入在预处理期间变得读不到，同样要给可读提示，不能报成
+                # 「内部处理失败」让用户无从判断是输入问题还是工具故障。
+                issue = public_issue(
+                    "INPUT_FILE_DAMAGED",
+                    "输入文件在预处理期间变得无法读取，请确认文件完整、未被占用后重试。",
+                )
+                reporter.emit("error", "输入无法读取", 7, 7, cancellable=False)
+                return PreparedSessionDto(operation_id, OperationStatus.VALIDATION_FAILED, issues=(issue,))
+            if initial_config is not None and (initial_config != final_config
+                                               or initial_baseline != final_baseline):
                 issue = public_issue("INPUT_CHANGED", "输入文件在预处理期间发生变化，请重新预览。")
                 reporter.emit("error", "输入已变化", 7, 7, cancellable=False)
                 return PreparedSessionDto(operation_id, OperationStatus.INPUT_CHANGED, issues=(issue,))
