@@ -85,6 +85,7 @@ class GatewayMcpService:
                     "validate_gateway_inputs", "preview_gateway_update", "generate_gateway_arxml",
                     "diagnose_generation_failure", "start_bug_repair", "get_bug_repair_status",
                     "submit_bug_repair", "cancel_bug_repair",
+                    "check_ota_configuration", "preview_ota_update", "generate_ota_arxml",
                 ],
                 policies={
                     "local_only": True,

@@ -62,7 +62,7 @@ def test_exe_runs_full_stdio_flow_without_python_or_source_paths(
                     initialized = await session.initialize()
                     assert initialized.server_info.name == "davinci-gw-mcp"
                     listed = await session.list_tools()
-                    assert len(listed.tools) == 9
+                    assert len(listed.tools) == 12
                     validated = await session.call_tool("validate_gateway_inputs", {
                         "config_path": str(config.resolve()), "baseline_path": str(baseline.resolve()),
                     }, read_timeout_seconds=60)

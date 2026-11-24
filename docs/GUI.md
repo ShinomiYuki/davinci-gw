@@ -6,11 +6,24 @@
 
 ## 启动
 
-将 `davinci-gw-gui-1.2.1-win-x64.zip` 完整解压到本地目录，双击 `davinci-gw-gui.exe`。程序是免安装 Windows x64 桌面应用，不需要 Python、PATH 或网络连接。不要只从压缩包中单独拖出 EXE；同目录的 `_internal` 是运行所需文件。
+将 `davinci-gw-gui-1.3.0-win-x64.zip` 完整解压到本地目录，双击 `davinci-gw-gui.exe`。程序是免安装 Windows x64 桌面应用，不需要 Python、PATH 或网络连接。不要只从压缩包中单独拖出 EXE；同目录的 `_internal` 是运行所需文件。
 
 安装目录可以只读。窗口位置和最近浏览目录保存在当前 Windows 用户设置中，日志位于 `%LOCALAPPDATA%\DaVinciGW\logs\gui.log`；不会把配置表内容、ARXML 内容或完整问题列表写入日志。
 
-## 四步工作流
+## OTA 白名单配置
+
+点击主窗口“OTA 白名单配置…”打开独立窗口。这项功能不使用路由配置表，只需选择包含 Com、BswM 和已有 OTA 模式入口的基准 ARXML。
+
+1. 选择本地基准文件，点击“检查缺漏”，查看各网段、方向的已有配置、缺失项和冲突。
+2. 点击“预览精确变更”，查看新增对象、引用修改和列表项移除的完整路径及前后值。关键引用缺失、歧义或配置冲突会阻止生成。
+3. 查看待手动处理事项。工具配置 BD、CH、DA、DK、DM、EP、GL、IC、LC、PT、SU 的 22 个 RX/TX OTA 组及关闭控制链、11 套网络管理控制；DG、LIN 和以太网不参与。
+4. 点击“确认并生成新文件…”，选择尚不存在的 `.arxml`，确认当前完整预览后生成。基准保持只读，不能覆盖任何已有输出。基准路径或内容变化后需重新预览。
+
+工具保留全部具体报文的 `ComIPduGroupRef`。请在 DaVinci 手动移除白名单报文的普通组引用，并关联同网段、同方向的 OTA 组；没有成员的新组也会建立完整 BswM 控制链。
+
+标准启用动作和接收超时监控保持保留。OTA 专用规则仅关闭组，条件消失不会自动启动组；恢复依赖保留的标准启用规则。先禁收发再切换 OTA、诊断恢复和网络退出后重新进入的启用边界，需在 DaVinci 和实际网络中验证。静态检查不等于已执行 DaVinci Validate/Generate 或硬件测试。
+
+## 路由配置四步工作流
 
 1. 选择或拖入标准配置表。文件必须是 `*_vX.x.xlsx`，并符合本项目输入契约。
 2. 选择或拖入基准 ARXML。文件必须包含 CanIf、EcuC、PduR；更新信号路由时还要求 Com。
@@ -56,6 +69,6 @@
 
 ## 当前边界
 
-桌面版只编排已有 GatewayFacade，不新增路由规则。当前不支持诊断/CanTp、直接报文 LIN 路由、多 ARXML 合并、DaVinci 自动导入/Validate、云端服务、遥测或自动更新。
+路由配置使用 GatewayFacade，OTA 配置使用独立的检查、预览和确认会话。当前不支持直接报文 LIN 路由、多 ARXML 合并、DaVinci 自动导入/Validate、云端服务、遥测或自动更新。
 
 项目自身使用 MIT License。随包第三方组件及许可证原文见 `THIRD_PARTY_NOTICES.md` 和 `third-party-licenses`；正式对外交付前仍需公司合规或法务确认。

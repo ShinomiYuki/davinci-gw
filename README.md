@@ -2,6 +2,8 @@
 
 本工具读取标准网关路由配置表和 DaVinci/MICROSAR 工程导出的 ARXML，处理直接报文、信号及 CAN 诊断路由的 `ADD`/`DELETE`，并按 `DoIP_to_CAN` 映射配置跨协议诊断路由，生成新版 ARXML。配置表和基准 ARXML 始终只读。
 
+1.3.0 新增 OTA 白名单配置。直接读取包含 Com、BswM 的基准 ARXML，先检查缺漏和预览精确变更，用户确认后生成新文件。固定配置 11 个 CAN 网段的 RX、TX 控制及网络管理控制，报文与组的关联由用户手动完成。详见 [1.3.0 发布说明](docs/发布说明_v1.3.0.md)。
+
 ## 主仓库与公司镜像
 
 本项目的主仓库是 [GitHub：ShinomiYuki/davinci-gw](https://github.com/ShinomiYuki/davinci-gw)。[公司 GitLab：hao.xin/davinci-gw-mirror](http://192.168.8.160/hao.xin/davinci-gw-mirror) **仅为镜像仓库**，用于公司内网查看和克隆，不作为独立开发入口。
@@ -54,6 +56,24 @@
 既有普通直接路由或 CanTp 诊断路由需要删除该参数时，使用 [remove-routed-tx-truncation](skills/remove-routed-tx-truncation/SKILL.md)（1.0.0）。其独立 Python 入口先按真实 CanIf/EcuC/PduR/CanTp 引用预览，再输出新 ARXML；不参与路由或共享业务不明确的目标保留并报告，不覆盖基准。两个 Skill 均随仓库源码分发，可复制完整对应目录到客户端 Skill 目录，无须额外应用服务。
 
 模板的七列 `DoIP_to_CAN` 按原始需求中的 logicalAddress、实际 Tester 与 CAN 请求/响应汇总映射，支持按项目打点或明确行号选择范围。工具 1.2.0 起执行该页的 DoIP/跨协议 PduR 配置，SoAd 与通信连接由基准提供。模板说明见 [Skill 1.2.0 发布说明](docs/Skill发布说明_v1.2.0.md)。
+
+## OTA 白名单配置
+
+OTA 入口不需要路由配置表，使用基准中已有的 Com、BswM 对象和 OTA 模式入口。目标网段为 BD、CH、DA、DK、DM、EP、GL、IC、LC、PT、SU，共 22 个 RX/TX OTA 组及对应关闭控制链，每个网段另有一套网络管理（NM）控制。DG、LIN 和以太网不在范围内。
+
+工具创建或复用组、BswM 动作、列表、表达式和规则，保留所有具体报文的 `ComIPduGroupRef`。白名单报文的普通组引用移除和 OTA 组关联由用户手动完成；空 OTA 组也会建立控制链。
+
+```powershell
+davinci-gw ota-check --baseline D:\Config\baseline.arxml
+davinci-gw ota-preview --baseline D:\Config\baseline.arxml
+davinci-gw ota-generate --baseline D:\Config\baseline.arxml --output D:\Config\ota-new.arxml
+```
+
+`ota-generate` 会在同一进程先显示完整预览，再要求输入 `YES`。自动化调用可显式传 `--confirm`；仍会先显示预览。检查或预览发现关键引用缺失、歧义、参数差异或冲突时阻止生成，输入变化后必须重新预览。禁止覆盖基准和已有输出。
+
+GUI 主窗口的“OTA 白名单配置…”打开独立检查、预览和确认窗口。MCP 使用 `check_ota_configuration → preview_ota_update → 完整展示并确认 → generate_ota_arxml`；分页和会话参数见 [MCP 使用说明](docs/MCP本地安装与使用.md)。
+
+OTA 专用关闭规则没有启用分支，关闭条件变为 False 不会自动启动组。先禁收发再进入 OTA、诊断恢复和网络退出后重新进入的行为，需要结合保留的标准启用规则，在 DaVinci 及实际网络中验证。工具静态复核不能代替 DaVinci Validate/Generate 或硬件测试。
 
 ## Windows 桌面版
 

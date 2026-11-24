@@ -94,6 +94,9 @@ class MainWindow(QMainWindow):
         subtitle = QLabel("选择标准配置表和基准 ARXML，先预览，再生成新文件。")
         root.addWidget(title)
         root.addWidget(subtitle)
+        self.ota_button = QPushButton("OTA 白名单配置…")
+        self.ota_button.clicked.connect(self._show_ota_dialog)
+        root.addWidget(self.ota_button)
 
         inputs = QGroupBox("1–2  选择输入文件")
         grid = QGridLayout(inputs)
@@ -208,7 +211,7 @@ class MainWindow(QMainWindow):
         advanced_layout = QGridLayout(self.advanced_panel)
         self.operation_label = QLabel("—")
         self.session_label = QLabel("—")
-        self.version_label = QLabel("1.2.2")
+        self.version_label = QLabel("1.3.0")
         self.open_log_button = QPushButton("打开日志目录")
         advanced_layout.addWidget(QLabel("操作 ID"), 0, 0)
         advanced_layout.addWidget(self.operation_label, 0, 1)
@@ -360,6 +363,12 @@ class MainWindow(QMainWindow):
                 layout.addWidget(detail_button)
             self.feature_layout.addWidget(card, index // 2, index % 2)
         self.feature_group.setVisible(bool(self.vm.features))
+
+    def _show_ota_dialog(self) -> None:
+        from .ota_dialog import OtaDialog
+
+        dialog = OtaDialog(self.baseline_edit.text(), self)
+        dialog.exec()
 
     def _show_feature_details(self, feature: FeatureSummaryDto) -> None:
         if self._detail_dialog is not None:

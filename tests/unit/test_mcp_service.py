@@ -123,6 +123,7 @@ def test_server_registers_exact_tools_and_safety_annotations() -> None:
             "preview_gateway_update", "generate_gateway_arxml",
             "diagnose_generation_failure", "start_bug_repair", "get_bug_repair_status",
             "submit_bug_repair", "cancel_bug_repair",
+            "check_ota_configuration", "preview_ota_update", "generate_ota_arxml",
         }
         assert tools["get_gateway_capabilities"].annotations.read_only_hint is True
         assert tools["validate_gateway_inputs"].annotations.idempotent_hint is True

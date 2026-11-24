@@ -24,7 +24,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 默认安装位置为：
 
 ```text
-%LOCALAPPDATA%\Programs\DaVinciGW\versions\1.1.5\davinci-gw-mcp.exe
+%LOCALAPPDATA%\Programs\DaVinciGW\versions\1.3.0\davinci-gw-mcp.exe
 ```
 
 安装器在复制前核对 `SHA256SUMS.txt` 中的全部文件。每个版本安装到独立目录，升级时 Codex 配置切换到新版本，因此正在运行的旧会话不会阻塞新版本安装；相同版本、相同内容可重复安装。Codex 配置有变化时会在原文件旁创建带 UTC 时间戳的 `.bak`。安装器只维护带以下标记的配置块，不会重写其他配置：
@@ -50,7 +50,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ```toml
 [mcp_servers.davinci_gateway]
-command = 'C:\Users\YOUR_NAME\AppData\Local\Programs\DaVinciGW\versions\1.1.5\davinci-gw-mcp.exe'
+command = 'C:\Users\YOUR_NAME\AppData\Local\Programs\DaVinciGW\versions\1.3.0\davinci-gw-mcp.exe'
 startup_timeout_sec = 30
 tool_timeout_sec = 3600
 enabled = true
@@ -58,6 +58,9 @@ required = false
 default_tools_approval_mode = "writes"
 
 [mcp_servers.davinci_gateway.tools.generate_gateway_arxml]
+approval_mode = "prompt"
+
+[mcp_servers.davinci_gateway.tools.generate_ota_arxml]
 approval_mode = "prompt"
 
 [mcp_servers.davinci_gateway.tools.start_bug_repair]
@@ -80,7 +83,22 @@ codex mcp list
 
 本项目的自动验证只使用临时 `CODEX_HOME`，不会修改真实用户配置。
 
-## 标准调用流程
+## OTA 白名单调用流程
+
+OTA 工具不需要 `.xlsx`。输入为包含 Com、BswM 和已有 OTA 模式入口的本地基准 ARXML。目标是 BD、CH、DA、DK、DM、EP、GL、IC、LC、PT、SU 的 RX/TX 共 22 个 OTA 组及关闭控制链，以及每个网段一套网络管理控制；DG、LIN 和以太网不参与。
+
+1. 调用 `check_ota_configuration(baseline_path=...)`，只读查看已有完整配置、缺漏和冲突摘要。
+2. 调用 `preview_ota_update(baseline_path=...)`，取得精确变更和当前进程的 `preparation_id`。变更包含对象或引用路径及前后值；冲突和关键引用缺失会阻止生成。
+3. 返回 `next_offset` 时，继续调用 `preview_ota_update`，传相同 `baseline_path`、`preparation_id` 和该 `offset`。按顺序获取全部页面；每页最多 100 条变更。向用户完整展示所有页面及手动操作事项，再取得明确确认。内容过大时安全停止，不会截掉精确变更后继续生成。
+4. 全部页面获取完且用户确认后，调用 `generate_ota_arxml(preparation_id=..., output_path=..., confirmed=true)`。输出目录必须已存在，输出须为尚不存在的本地绝对 `.arxml` 路径。
+
+检查和预览均为只读，生成标记为写操作。不能跨进程使用 `preparation_id`，也不能绕过预览、完整分页获取或确认。OTA 预览最多保留 4 份、有效期 30 分钟，生成成功后消费；输入内容变化后重新预览。禁止覆盖基准及已有输出。
+
+工具建立 BswM 到 OTA 组的控制引用，但保留所有具体报文的 `ComIPduGroupRef`。请在 DaVinci 手动移除白名单报文的普通组引用并关联对应 OTA 组。空组也会有控制链，预览和结果会提示手动关联。
+
+标准启用和接收超时监控配置保留。专用关闭规则没有启用分支，条件变为 False 不会自动启动组。先禁收发后进入 OTA、诊断恢复、网络退出后重新进入的行为，需要结合保留的标准启用规则进行实际验证。静态复核不代替 DaVinci Validate/Generate 或硬件测试。
+
+## 标准路由调用流程
 
 1. 调用 `get_gateway_capabilities` 确认版本和功能。
 2. 调用 `validate_gateway_inputs`，传入 `.xlsx` 与 `.arxml` 的本地绝对路径。

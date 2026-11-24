@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import traceback
 from collections.abc import Sequence
 from pathlib import Path
@@ -30,6 +31,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--debug", action="store_true", help="发生意外异常时显示完整堆栈")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    for name in ("ota-check", "ota-preview", "ota-generate"):
+        child = subparsers.add_parser(name, help="检查、预览或确认生成 OTA 白名单配置")
+        child.add_argument("--baseline", required=True, help="只读基准 ARXML 的绝对路径")
+        if name == "ota-generate":
+            child.add_argument("--output", required=True, help="尚不存在的输出 ARXML 绝对路径")
+            child.add_argument("--confirm", action="store_true", help="明确确认本次显示的预览后生成")
     for command, help_text in (
         ("validate", "校验配置表契约、目标版本和基准 ARXML"),
         ("preview", "校验并预览 ADD、DELETE 数量，不写入 ARXML"),
@@ -170,6 +177,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     try:
+        if args.command.startswith("ota-"):
+            from davinci_gw.application.ota import OtaService
+
+            service = OtaService()
+            result = (service.check(args.baseline) if args.command == "ota-check"
+                      else service.preview(args.baseline))
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if args.command != "ota-generate":
+                return EXIT_OK if result.get("can_generate", False) else EXIT_CONTRACT_ERROR
+            if not result.get("can_generate") or not result.get("preparation_id"):
+                return EXIT_CONTRACT_ERROR
+            confirmed = args.confirm
+            if not confirmed:
+                try:
+                    confirmed = input("确认以上精确预览并生成新文件？输入 YES：").strip() == "YES"
+                except EOFError:
+                    confirmed = False
+            if not confirmed:
+                print("未确认，未生成文件。")
+                return EXIT_CONTRACT_ERROR
+            generated = service.generate(result["preparation_id"], args.output, confirmed=True)
+            print(json.dumps(generated, ensure_ascii=False, indent=2))
+            return EXIT_OK if generated.get("output_path") else EXIT_CONTRACT_ERROR
         if args.command == "validate":
             report = validate_inputs(args.config, args.baseline)
             _render_validate(report)

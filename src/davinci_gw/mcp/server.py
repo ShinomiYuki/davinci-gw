@@ -11,6 +11,7 @@ from mcp.types import ToolAnnotations
 from davinci_gw.mcp.schemas import GatewayToolResponse
 from davinci_gw.mcp.service import GatewayMcpService
 from davinci_gw.mcp.version import MCP_VERSION
+from davinci_gw.mcp.ota_service import OtaMcpService
 
 SERVER_INSTRUCTIONS = (
     "这是纯本地 STDIO 网关配置服务。标准工作流：先调用 validate_gateway_inputs，"
@@ -27,6 +28,7 @@ SERVER_INSTRUCTIONS = (
 def build_server(service: GatewayMcpService | None = None) -> MCPServer[Any]:
     """建立网关生成和两阶段审批修复工具；传入 service 便于协议测试。"""
     gateway = service or GatewayMcpService()
+    ota = OtaMcpService(gateway.runtime)
 
     @asynccontextmanager
     async def lifespan(_: MCPServer[Any]) -> AsyncGenerator[None, None]:
@@ -174,5 +176,32 @@ def build_server(service: GatewayMcpService | None = None) -> MCPServer[Any]:
     )
     async def cancel_bug_repair(repair_id: str, confirmation: str) -> GatewayToolResponse:
         return GatewayToolResponse.model_validate(await gateway.cancel_bug_repair(repair_id, confirmation))
+
+    @server.tool(
+        name="check_ota_configuration",
+        description="只读检查 11 个 CAN 网段的 OTA 配置缺漏；保留所有报文组归属。",
+        annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False),
+        structured_output=True,
+    )
+    async def check_ota_configuration(baseline_path: str) -> GatewayToolResponse:
+        return GatewayToolResponse.model_validate(await ota.invoke("check", baseline_path=baseline_path))
+
+    @server.tool(
+        name="preview_ota_update",
+        description="只读预览 OTA 精确变更。首次只传基准；若有 next_offset，用同一 preparation_id 和该 offset 逐页获取并完整展示，再取得用户确认。",
+        annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False),
+        structured_output=True,
+    )
+    async def preview_ota_update(baseline_path: str, preparation_id: str = "", offset: int = 0) -> GatewayToolResponse:
+        return GatewayToolResponse.model_validate(await ota.invoke("preview", baseline_path=baseline_path, preparation_id=preparation_id, offset=offset))
+
+    @server.tool(
+        name="generate_ota_arxml",
+        description="用户明确确认精确预览后设 confirmed=true，使用同进程 preparation_id 生成新的 OTA ARXML；禁止覆盖。",
+        annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False),
+        structured_output=True,
+    )
+    async def generate_ota_arxml(preparation_id: str, output_path: str, confirmed: bool = False) -> GatewayToolResponse:
+        return GatewayToolResponse.model_validate(await ota.invoke("generate", preparation_id=preparation_id, output_path=output_path, confirmed=confirmed))
 
     return server

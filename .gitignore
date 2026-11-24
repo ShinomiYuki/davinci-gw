@@ -17,3 +17,4 @@ release/davinci-gw-gui-*-win-x64/
 docs/*开发日志*.md
 *.tmp.arxml
 .*.tmp.arxml
+/docs/OTA白名单控制需求记录.md

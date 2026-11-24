@@ -43,6 +43,7 @@ def test_stdio_protocol_lists_tools_and_completes_prepare_generate(
                         "preview_gateway_update", "generate_gateway_arxml",
                         "diagnose_generation_failure", "start_bug_repair",
                         "get_bug_repair_status", "submit_bug_repair", "cancel_bug_repair",
+                        "check_ota_configuration", "preview_ota_update", "generate_ota_arxml",
                     ]
                     capabilities = await session.call_tool("get_gateway_capabilities")
                     assert capabilities.structured_content["status"] == "SUCCESS"
